@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+
+# Big / local only
+data/
+pretrained-model/
+wandb/
+checkpoints/
+outputs/
+experiments/*/artifacts/
+
+# Common large binaries
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.npz
+*.npy
+*.zip
+*.tar
+*.7z
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.lmdb
+*.jsonl
+
+# IDE / env / logs
+.idea/
+.vscode/
+.venv/
+.env
+*.ipynb_checkpoints
+logs/
+runs/
