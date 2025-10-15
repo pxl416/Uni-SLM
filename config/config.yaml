@@ -1,57 +1,129 @@
 # data
-active_datasets: [CSL_News]   # 可选，不写则默认全部启用
+
+seed: 3407
+
+active_datasets: [CSL_Daily, CSL_News]
 
 datasets:
-  CSL_News:
-    rgb_dirs: data/mini_CSL_News/rgb
-    pose_dirs: data/mini_CSL_News/pose
-    train_label_paths: data/mini_CSL_News/train_label.json
-    val_label_paths: data/mini_CSL_News/val_label.json
-    test_label_paths: data/mini_CSL_News/test_label.json
-
-  BOBSL:
-    rgb_dirs: data/bobsl_ds/rgb
-    pose_dirs: data/mini_bobsl_ds/pose
-    train_label_paths: data/mini_bobsl_ds/train_label.json
-    val_label_paths: data/mini_bobsl_ds/val_label.json
-    test_label_paths: data/mini_bobsl_ds/test_label.json
 
   CSL_Daily:
-    rgb_dirs: data/mini_CLS_Daily/rgb
-    pose_dirs: data/mini_CLS_Daily/pose
-    train_label_paths: data/mini_CLS_Daily/train_label.json
-    val_label_paths: data/mini_CLS_Daily/val_label.json
-    test_label_paths: data/mini_CLS_Daily/test_label.json
+    frame_dir:  data/mini_CSL_Daily/sentence
+    label_dir:  data/mini_CSL_Daily/sentence_label
+    pkl_meta:   data/mini_CSL_Daily/sentence_label/csl2020ct_v2.pkl
+    split_file: data/mini_CSL_Daily/sentence_label/split_1.txt
 
+    use_rgb:  true
+    use_pose: false
+    use_text: true
+    token_level: char          # char | word | gloss
 
-augmentation:
+  # 目标帧数/采样（用于 sample_temporal_indices）
   temporal:
-    max_frames: 64
-    strategy:
-      mode: "mixed"
-      weights: { uniform: 0.4, random: 0.4, dense: 0.2 }
-    time_mask_p: 0.0      # ← 若要启用时间遮挡，>0 如 0.15
-    time_mask_ratio: 0.1  # ← 被遮挡比例
-  rgb:
-    color_p: 0.8          # ← 原来的 prob 建议改名为 color_p（或在代码中映射 prob→color_p）
-    hflip_p: 0.3
-    blur_p: 0.2
-    erase_p: 0.0
-    erase_scale: [0.02, 0.1]
-    color_jitter: { b: 0.2, c: 0.2, s: 0.1, h: 0.05 }
-  pose:
-    conf_thr: 0.3
-    noise_level: 0.0      # 开轻噪声时可设 0.5~1.5（像素尺度，取决于输入）
+    ratio: 0.25         # 取原视频的 1/4 帧；根据需要改成 0.5、0.125 等
+    jitter: true        # 每个均匀分段内随机取一帧；false 则取段中点
+    min_frames: 8       # 至少取 8 帧（防止短视频过小）
+    max_frames: 32      # 最多取 32 帧（限制计算量）；不想限制就设 null
+    seed: null          # 可选；设成整数可复现，如 123；不复现就留 null
 
-  spatial:
-    use_bbox: false        # ← 默认用全图裁剪，flip 测试更稳；后续再开 bbox
-    min_bbox_ratio: 0.25   # ← 开 bbox 时，小于此比例则退回全图
-  output:
-    size: [224, 224]       # ← 统一输出分辨率（等价于你的 image_size）
-  text:
-    prob: 0.0
-    modes: ["noise"]
-seed: 3407
+
+    # 完整对齐 SignAugment 的参数
+    augment:
+      size: 224
+      channel: rgb # rgb/gray
+      degrees: 5.0 # rotate
+      translate: 0.05
+      scale: [0.9, 1.1]
+      shear: 2.0
+      hue: 0.015
+      saturation: 0.40
+      brightness: 0.40
+      contrast: 0.20
+
+
+
+
+
+
+
+      enable: true
+      # --- 与 SignAugment 对齐 ---
+      size: 224
+      channel: rgb             # rgb | gray
+      gray_as_rgb: false       # gray时是否重复到3通道
+      degrees: 5.0
+      translate: 0.05
+      scale: [0.9, 1.1]
+      shear: 2.0
+      enable_flip: false       # 手语默认不翻转
+      hue: 0.015
+      saturation: 0.40
+      brightness: 0.40
+      contrast: 0.20
+      cutout_p: 0.15
+      cutout_max_area: 0.05
+      cutout_num: [1, 2]
+      mean: [0.485, 0.456, 0.406]
+      std:  [0.229, 0.224, 0.225]
+
+    # 验证/测试期：只做 resize+normalize（不做随机增强）
+    augment_val:
+      enable: false            # 如果你想统一走 SignAugment 的 resize+norm，可设为 true 并把随机幅度设为 0
+      size: 224
+      channel: rgb
+      gray_as_rgb: false
+      mean: [0.485, 0.456, 0.406]
+      std:  [0.229, 0.224, 0.225]
+
+  # ---------- CSL_News：示例（有 pose 的旧数据） ----------
+  CSL_News:
+    rgb_dir:  data/mini_CSL_News/rgb
+    pose_dir: data/mini_CSL_News/pose
+    train_labels: data/mini_CSL_News/train_label.json
+    val_labels:   data/mini_CSL_News/val_label.json
+    test_labels:  data/mini_CSL_News/test_label.json
+
+    use_rgb:  true
+    use_pose: true
+    use_text: true
+    token_level: char
+
+    temporal:
+      stride: null
+      ratio:  null
+      T:      32
+      jitter: true
+      random_offset: true
+
+    augment_train:
+      enable: true
+      size: 224
+      channel: rgb
+      gray_as_rgb: false
+      degrees: 5.0
+      translate: 0.05
+      scale: [0.9, 1.1]
+      shear: 2.0
+      enable_flip: false
+      hue: 0.015
+      saturation: 0.40
+      brightness: 0.40
+      contrast: 0.20
+      cutout_p: 0.10
+      cutout_max_area: 0.04
+      cutout_num: [1, 2]
+      mean: [0.485, 0.456, 0.406]
+      std:  [0.229, 0.224, 0.225]
+
+    augment_val:
+      enable: false
+      size: 224
+      channel: rgb
+      gray_as_rgb: false
+      mean: [0.485, 0.456, 0.406]
+      std:  [0.229, 0.224, 0.225]
+
+
+
 
 
 

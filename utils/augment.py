@@ -10,76 +10,57 @@ from PIL import Image, ImageDraw, UnidentifiedImageError
 
 TensorOrPIL = Union[torch.Tensor, Image.Image]
 
-
-# ---------------------------
-# 时间采样（下采样/均匀/抖动）
-# ---------------------------
 def sample_temporal_indices(
     n: int,
-    T: Optional[int] = None,
+    ratio: float,
     *,
-    stride: Optional[int] = None,
-    ratio: Optional[float] = None,
     jitter: bool = True,
-    random_offset: bool = True,
+    min_frames: int = 1,
+    max_frames: Optional[int] = None,
+    seed: Optional[int] = None,   # ✅ 可选：保证可复现（不污染全局随机状态）
 ) -> List[int]:
     """
-    为视频序列采样帧索引。
-    选择优先级：stride > ratio > T (均匀+抖动)。
+    按比例采样时间索引：将 [0,n) 均匀切成 k 段，每段取 1 帧（抖动 or 中点）
     - n: 原始帧数
-    - T: 目标帧数（若未提供 stride/ratio）
-    - stride: 步长下采样（如 2 表示隔帧取）
-    - ratio: 比例下采样（如 0.25 表示取 1/4）
-    - jitter: 均匀采样时每段内是否随机
-    - random_offset: stride 模式下是否允许随机起点
+    - ratio: 采样比例 (0~1]；会被夹到 [0,1]
+    - jitter: True 则在段内随机取，False 取段中点
+    - min_frames: 至少取多少帧（默认 1）
+    - max_frames: 最多取多少帧（None 表示不限制）
+    - seed: 若给定，使用独立 RNG，保证可复现
     """
     if n <= 0:
         return []
-    # 1) stride 优先
-    if stride and stride > 0:
-        if random_offset and stride > 1:
-            start = random.randrange(0, min(stride, n))
-        else:
-            start = 0
-        idxs = list(range(start, n, stride))
-        if T is not None and len(idxs) > T:
-            # 再均匀截断为 T
-            seg = np.linspace(0, len(idxs), num=T + 1, dtype=np.int32)
-            out = []
-            for a, b in zip(seg[:-1], seg[1:]):
-                if b - a <= 0:
-                    out.append(idxs[min(a, len(idxs) - 1)])
-                else:
-                    out.append(idxs[random.randrange(a, b)] if jitter else idxs[(a + b - 1) // 2])
-            return out
-        return idxs
 
-    # 2) ratio 次之
-    if ratio and 0 < ratio < 1:
-        k = max(1, int(round(n * ratio)))
-        if T is not None:
-            k = min(k, T)
-        # 均匀+抖动取 k 个
-        seg = np.linspace(0, n, num=k + 1, dtype=np.int32)
-        out = []
-        for a, b in zip(seg[:-1], seg[1:]):
-            if b - a <= 0:
-                out.append(min(a, n - 1))
+    r = max(0.0, min(1.0, float(ratio)))  # 夹到 [0,1]
+    if r == 0.0 and min_frames <= 0:
+        return []
+
+    # 目标帧数
+    k = max(min_frames, int(round(n * r)))
+    if max_frames is not None:
+        k = min(k, max_frames)
+    k = max(1, min(k, n))  # 最终保证 1 <= k <= n
+
+    # 不需要真正采样（全取）
+    if k == n:
+        return list(range(n))
+
+    # 独立随机源（不污染全局）
+    rng = random.Random(seed)
+
+    # 将 [0,n) 切成 k 段，每段内取 1 帧
+    edges = np.linspace(0, n, num=k + 1, dtype=np.int32)
+    idxs: List[int] = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        if b <= a + 1:
+            # 段内容量 0 或 1：直接取 a（或 n-1）
+            idxs.append(min(a, n - 1))
+        else:
+            if jitter:
+                idxs.append(rng.randrange(a, b))       # [a, b-1]
             else:
-                out.append(random.randrange(a, b) if jitter else (a + b - 1) // 2)
-        return out
-
-    # 3) 仅 T：均匀+抖动
-    if T is None:
-        return list(range(n))  # 不采样
-    seg = np.linspace(0, n, num=T + 1, dtype=np.int32)
-    out = []
-    for a, b in zip(seg[:-1], seg[1:]):
-        if b - a <= 0:
-            out.append(min(a, n - 1))
-        else:
-            out.append(random.randrange(a, b) if jitter else (a + b - 1) // 2)
-    return out
+                idxs.append((a + b - 1) // 2)          # 中点（整数）
+    return idxs
 
 
 # ---------------------------
@@ -143,7 +124,7 @@ class SignAugment:
         brightness: float = 0.40,
         contrast: float = 0.20,
         # cutout
-        cutout_p: float = 0.15,
+        cutout_p: float = 0.0,
         cutout_max_area: float = 0.05,  # 单块面积比例
         cutout_num: Tuple[int, int] = (1, 2),
         # normalize
@@ -360,3 +341,4 @@ def preset_medium(size=224, channel: str = "rgb", gray_as_rgb: bool = False) -> 
         cutout_max_area=0.05,
         cutout_num=(1, 2),
     )
+
