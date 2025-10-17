@@ -1,70 +1,146 @@
-# tests/smoke_loader.py
-import os
-import types
-import yaml
-import torch
 
-# === 修改这行，指向你的 dataset2.py 路径 ===
-from utils.dataset2 import create_dataloader
+def create_dataloader(
+        dataset_name: str,
+        split: str,
+        cfg,
+        batch_size: int = 4,
+        num_workers: int = 4,
+        use_rgb: bool = True,
+        token_level: str = "char",
+        T: int = 16,
+        img_size: int = 224,
+        min_frames: int = 1,
+        skip_empty_text: bool = False,
+        min_text_len: int = 1,
+        debug: bool = False,
+):
+    """
+    构建 DataLoader：
+      - 目前实现 CSL_Daily（帧目录 + sentence_label）
+      - 其他数据集可按需扩展
+    """
+    dataset_name = dataset_name.strip()
+    split = split.lower()
+    assert split in {"train", "val", "dev", "test"}, f"Unknown split: {split}"
 
-# ---- 1) 加载 config 并做适配 ----
-def load_cfg_with_adapter(yaml_path, dataset_name):
-    with open(yaml_path, "r", encoding="utf-8") as f:
-        cfg_raw = yaml.safe_load(f)
+    # 如果是字符串路径，则加载配置
+    if isinstance(cfg, str):
+        config_path = cfg
+        cfg = load_config_from_yaml(config_path)
+    else:
+        config_path = None
 
-    # 把 cfg_raw 映射到一个对象，让你现有 dataset2.py 能用点号访问
-    cfg = types.SimpleNamespace(**cfg_raw)
+    if dataset_name == "CSL_Daily":
+        # 推断 root：使用明确的根目录
+        root = _guess_daily_root_from_cfg(cfg, config_path)
 
-    # 适配：dataset2.py 期望 cfg.data_path.* 有路径
-    ds_map = cfg_raw.get("datasets", {})
-    if dataset_name not in ds_map:
-        raise KeyError(f"datasets 里找不到 {dataset_name}，可选：{list(ds_map.keys())}")
+        # 从配置中获取参数
+        dataset_cfg = _get_from_cfg(cfg, "datasets.CSL_Daily", {})
+        temporal_cfg = _get_from_cfg(cfg, "temporal", {})
 
-    data_path = types.SimpleNamespace(**ds_map[dataset_name])
-    cfg.data_path = data_path
+        # 计算实际采样帧数
+        ratio = temporal_cfg.get("ratio", 0.25)
+        jitter = temporal_cfg.get("jitter", True)
+        min_frames_cfg = temporal_cfg.get("min_frames", 4)
+        max_frames_cfg = temporal_cfg.get("max_frames", 32)
 
-    return cfg
+        # 使用配置中的split文件
+        split_file = dataset_cfg.get("split_file")
 
-# ---- 2) 构造 args（dataset2.py 里用到的字段）----
-def build_args(dataset_name="CSL_News"):
-    A = types.SimpleNamespace()
-    A.dataset_name = dataset_name
-    A.batch_size = 2
-    A.num_workers = 0   # 先用 0，方便本地调试
-    A.max_length = 64
-    A.rgb_support = True
-    A.use_aug = False
-    return A
+        # 处理frame_base路径
+        frame_base = dataset_cfg.get("rgb_dir")
 
-# ---- 3) 跑一个 batch 看看形状 ----
-def main():
-    yaml_path = "config/config.yaml"  # 修改成你的实际路径
-    dataset_name = "CSL_News"
+        # 使用配置中的参数覆盖默认参数
+        actual_T = T
+        if split == "train":
+            actual_random_offset = jitter
+        else:
+            actual_random_offset = False
 
-    cfg = load_cfg_with_adapter(yaml_path, dataset_name)
-    args = build_args(dataset_name)
+        if debug:
+            print(f"[DEBUG] Creating CSL_Daily dataset with:")
+            print(f"  root: {root}")
+            print(f"  split: {split}")
+            print(f"  split_file: {split_file}")
+            print(f"  frame_base: {frame_base}")
+            print(f"  T: {actual_T}")
+            print(f"  min_frames: {max(min_frames, min_frames_cfg)}")
 
-    # phase 可选 'train' | 'val' | 'test'
-    for phase in ["train"]:
-        print(f"\n>>> Building dataloader for {dataset_name} [{phase}] ...")
-        dl = create_dataloader(args, cfg, phase=phase)
+        ds = CSLDailyDataset(
+            root=root,
+            split=("val" if split == "dev" else split),
+            token_level=token_level,
+            T=actual_T,
+            random_offset=actual_random_offset,
+            max_text_len=dataset_cfg.get("max_text_len", 128),
+            use_rgb=use_rgb,
+            frame_base=frame_base,
+            rgb_transform=None,  # 使用类内默认
+            img_size=img_size,
+            min_frames=max(min_frames, min_frames_cfg),  # 取较大值
+            skip_empty_text=skip_empty_text,
+            min_text_len=min_text_len,
+            split_file=split_file,  # 传递split文件路径
+            debug=debug,
+        )
 
-        # 取一个 batch
-        it = iter(dl)
-        src_input, tgt_input = next(it)
+        if len(ds) == 0:
+            print(f"警告: {split} 数据集为空!")
+            print("请检查以下路径是否存在:")
+            print(f"  root: {root}")
+            print(f"  frame_base: {ds.frame_base}")
+            print(f"  split_file: {split_file}")
+            if os.path.exists(root):
+                print("root目录内容:", os.listdir(root))
+            else:
+                print(f"root目录不存在: {root}")
+            if os.path.exists(ds.frame_base):
+                print("frame_base目录内容:", os.listdir(ds.frame_base)[:10])
+            else:
+                print(f"frame_base目录不存在: {ds.frame_base}")
+            if split_file and os.path.exists(split_file):
+                print(f"split_file存在: {split_file}")
+            else:
+                print(f"split_file不存在: {split_file}")
 
-        print("batch keys in src_input:", list(src_input.keys()))
-        print("name_batch len:", len(src_input["name_batch"]))
-        print("attention_mask:", tuple(src_input["attention_mask"].shape))
+        loader = torch.utils.data.DataLoader(
+            ds,
+            batch_size=batch_size,
+            shuffle=(split == "train"),
+            num_workers=num_workers,
+            pin_memory=True,
+            collate_fn=csl_collate,
+            drop_last=(split == "train"),
+        )
+        return loader
 
-        for part in ["body", "left", "right", "face_all"]:
-            if part in src_input:
-                print(f"{part}:", tuple(src_input[part].shape))  # [B, T, K, 3]
+    elif dataset_name == "CSL_News":
+        raise NotImplementedError("CSL_News 的 DataLoader 请使用你现有的实现或单独适配。")
 
-        if "rgb_img" in src_input:
-            print("rgb_img:", tuple(src_input["rgb_img"].shape))  # [B, T, 3, 112, 112]
+    else:
+        raise NotImplementedError(f"不支持的数据集: {dataset_name}")
 
-        print("gt_sentence len:", len(tgt_input["gt_sentence"]))
 
+# 可选：快速自测
 if __name__ == "__main__":
-    main()
+
+    import os, glob
+
+    root = "/home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily"
+    split_file = os.path.join(root, "sentence_label", "split_2.txt")
+    frame_base = os.path.join(root, "sentence")
+
+    print("root exists:", os.path.exists(root), root)
+    print("split exists:", os.path.exists(split_file), split_file)
+    print("frame_base exists:", os.path.isdir(frame_base), frame_base)
+
+    if os.path.isdir(frame_base):
+        subs = [d for d in sorted(os.listdir(frame_base)) if os.path.isdir(os.path.join(frame_base, d))]
+        print("num video dirs under sentence/:", len(subs))
+        print("sample dirs:", subs[:5])
+        if subs:
+            first = os.path.join(frame_base, subs[0])
+            imgs = []
+            for ext in ("*.jpg", "*.jpeg", "*.png"):
+                imgs += glob.glob(os.path.join(first, ext))
+            print("first video dir:", first, "num imgs:", len(imgs))

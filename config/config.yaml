@@ -1,133 +1,91 @@
-# data
-
+# ---------- 顶层 ----------
 seed: 3407
-
 active_datasets: [CSL_Daily]
 
+# 顶层 temporal 仅作兜底（可留空或删掉）
+temporal: {}
 
+# ---------- 数据集配置 ----------
 datasets:
   CSL_Daily:
-    rgb_dir: data/mini_CSL_Daily/sentence
-    label_dir:  data/mini_CSL_Daily/sentence_label
-    pkl_meta:   data/mini_CSL_Daily/sentence_label/csl2020ct_v2.pkl
-    split_file: data/mini_CSL_Daily/sentence_label/split_2.txt
-
+    root: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily
+    rgb_dir: sentence                         # 相对 root
+    split_file: sentence_label/split_2.txt    # 相对 root
+    max_text_len: 128
     use_rgb:  true
     use_pose: false
     use_text: true
-    token_level: char          # char | word | gloss
+    token_level: char
 
-  # 目标帧数/采样（用于 sample_temporal_indices）
-  temporal:
-    ratio: 0.25         # 取原视频的 1/4 帧；根据需要改成 0.5、0.125 等
-    jitter: true        # 每个均匀分段内随机取一帧；false 则取段中点
-    min_frames: 4       # 至少取 4 帧（防止短视频过小）
-    max_frames: 32      # 最多取 32 帧（限制计算量）；不想限制就设 null
-    seed: null          # 可选；设成整数可复现，如 123；不复现就留 null
+    # ✅ 这个块是“CSL_Daily 专用”的 temporal / 增强
+    temporal:
+      ratio: 0.25
+      jitter: true
+      min_frames: 4         # mini 数据若太短先设 1 验证路径，再调回 4/8
+      max_frames: 32
+      augment:
+        size: 224
+        channel: rgb
+        degrees: 5.0
+        translate: 0.05
+        scale: [0.9, 1.1]
+        shear: 2.0
+        hue: 0.015
+        saturation: 0.40
+        brightness: 0.40
+        contrast: 0.20
+      augment_val:
+        enable: false
+        size: 224
+        channel: rgb
+        gray_as_rgb: false
+        mean: [0.485, 0.456, 0.406]
+        std:  [0.229, 0.224, 0.225]
 
-
-    # 完整对齐 SignAugment 的参数
-    augment:
-      size: 224
-      channel: rgb # rgb/gray
-      degrees: 5.0 # rotate
-      translate: 0.05
-      scale: [0.9, 1.1]
-      shear: 2.0
-      hue: 0.015
-      saturation: 0.40
-      brightness: 0.40
-      contrast: 0.20
-
-
-
-
-
-
-#
-#      enable: true
-#      # --- 与 SignAugment 对齐 ---
-#      size: 224
-#      channel: rgb             # rgb | gray
-#      gray_as_rgb: false       # gray时是否重复到3通道
-#      degrees: 5.0
-#      translate: 0.05
-#      scale: [0.9, 1.1]
-#      shear: 2.0
-#      enable_flip: false       # 手语默认不翻转
-#      hue: 0.015
-#      saturation: 0.40
-#      brightness: 0.40
-#      contrast: 0.20
-#      cutout_p: 0.15
-#      cutout_max_area: 0.05
-#      cutout_num: [1, 2]
-#      mean: [0.485, 0.456, 0.406]
-#      std:  [0.229, 0.224, 0.225]
-
-    # 验证/测试期：只做 resize+normalize（不做随机增强）
-    augment_val:
-      enable: false            # 如果你想统一走 SignAugment 的 resize+norm，可设为 true 并把随机幅度设为 0
-      size: 224
-      channel: rgb
-      gray_as_rgb: false
-      mean: [0.485, 0.456, 0.406]
-      std:  [0.229, 0.224, 0.225]
-
-  # ---------- CSL_News：示例（有 pose 的旧数据） ----------
   CSL_News:
     rgb_dir:  data/mini_CSL_News/rgb
     pose_dir: data/mini_CSL_News/pose
     train_labels: data/mini_CSL_News/train_label.json
     val_labels:   data/mini_CSL_News/val_label.json
     test_labels:  data/mini_CSL_News/test_label.json
-
     use_rgb:  true
     use_pose: true
     use_text: true
     token_level: char
 
+    # ✅ News 专用 temporal（示例）
     temporal:
-      stride: null
-      ratio:  null
-      T:      32
+      T: 32
       jitter: true
       random_offset: true
+      augment_train:
+        enable: true
+        size: 224
+        channel: rgb
+        gray_as_rgb: false
+        degrees: 5.0
+        translate: 0.05
+        scale: [0.9, 1.1]
+        shear: 2.0
+        enable_flip: false
+        hue: 0.015
+        saturation: 0.40
+        brightness: 0.40
+        contrast: 0.20
+        cutout_p: 0.10
+        cutout_max_area: 0.04
+        cutout_num: [1, 2]
+        mean: [0.485, 0.456, 0.406]
+        std:  [0.229, 0.224, 0.225]
+      augment_val:
+        enable: false
+        size: 224
+        channel: rgb
+        gray_as_rgb: false
+        mean: [0.485, 0.456, 0.406]
+        std:  [0.229, 0.224, 0.225]
 
-    augment_train:
-      enable: true
-      size: 224
-      channel: rgb
-      gray_as_rgb: false
-      degrees: 5.0
-      translate: 0.05
-      scale: [0.9, 1.1]
-      shear: 2.0
-      enable_flip: false
-      hue: 0.015
-      saturation: 0.40
-      brightness: 0.40
-      contrast: 0.20
-      cutout_p: 0.10
-      cutout_max_area: 0.04
-      cutout_num: [1, 2]
-      mean: [0.485, 0.456, 0.406]
-      std:  [0.229, 0.224, 0.225]
-
-    augment_val:
-      enable: false
-      size: 224
-      channel: rgb
-      gray_as_rgb: false
-      mean: [0.485, 0.456, 0.406]
-      std:  [0.229, 0.224, 0.225]
-
-
-
-
-
-
-# model
+# ---------- 其余（保持不变即可，注意避免重复键） ----------
 mode: "pretrain"
 
 Encoders:
@@ -142,9 +100,9 @@ Pretraining:
   projection_dim: 256
 
 Evaluation:
-  retrieval:   { enabled: true, head: "RetrievalHead", rgb_in: 512, text_in: 384, proj_dim: 256 }
-  recognition: { enabled: true, head: "RecognitionHeadCTC", in_dim: 512, num_classes: 2000 }
-  translation: { enabled: true, head: "TranslationHeadMT5", in_dim: 512, vocab_size: 30000 }
+  retrieval:   { enabled: true, head: "RetrievalHead", rgb_in: 512, text_in: 384, proj_dim: 256, temperature: 0.07 }
+  recognition: { enabled: true, head: "RecognitionHeadCTC", in_dim: 512, num_classes: 2000, hidden_dim: 512, num_layers: 2, dropout: 0.1, blank_id: 0 }
+  translation: { enabled: true, head: "TranslationHeadMT5", in_dim: 512, vocab_size: 30000, mt5_path: google/mt5-base, hidden_dim: 768, label_smoothing: 0.1, lang: Chinese, max_length: 128 }
 
 Fusion:
   pose_rgb:  { enabled: false }
@@ -152,46 +110,19 @@ Fusion:
   rgb_text:  { enabled: false }
 
 Training:
-  gradient_clip: 1.0
-
-# trainer
-wandb:
-  use: True  # 是否启用 wandb
-
-  api_key: # ${WANDB_API_KEY}  # api_key: ${0c563568ac7ebb0941d93b54803b7101d16280b6}
-  run_name: multi-ds0928 # ${WANDB_RUN_NAME}
-  project: SignLanguage-multi-ds # ${WANDB_PROJECT}  # "SignLanguage-Retrieval"
-
-save_dir: checkpoints/multi-ds0928 # PATH # "checkpoints/retrieval_0801"
-
-Evaluation:
-  retrieval:
-    enabled: true
-    proj_dim: 256
-    temperature: 0.07
-  recognition:
-    enabled: true
-    num_classes: 2000      # 按你的字表大小改
-    hidden_dim: 512
-    num_layers: 2
-    dropout: 0.1
-    blank_id: 0            # 或数据集的 CTC blank id
-  translation:
-    enabled: true
-    mt5_path: google/mt5-base
-    hidden_dim: 768
-    label_smoothing: 0.1
-    lang: Chinese
-    max_length: 128
-
-training:
   epochs: 20
-  eval_freq: 1
   batch_size: 4
   learning_rate: 1e-4
-  epochs: 20
   grad_clip: 1.0
 
 optimizer:
   type: "adam"
   scheduler: "cosine"
+
+wandb:
+  use: True
+  api_key:
+  run_name: multi-ds0928
+  project: SignLanguage-multi-ds
+
+save_dir: checkpoints/multi-ds0928

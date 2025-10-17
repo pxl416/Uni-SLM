@@ -126,7 +126,7 @@ def v2t_metrics(sims, query_masks=None):
         # NOTE: Using distance subtraction to perform the ranking is easier to make
         # deterministic than using argsort, which suffers from the issue of defining
         # "stability" for equal distances.  Example of distance subtraction code:
-        # github.com/antoine77340/Mixture-of-Embedding-Experts/blob/master/train.py
+        # github.com/antoine77340/Mixture-of-Embedding-Experts/blob/master/pretrain.py
         sorted_dists = np.sort(row_dists)
 
         min_rank = np.inf

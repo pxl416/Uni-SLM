@@ -7,7 +7,7 @@ import torch
 import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
 
-from utils.dataset2 import CSLNewsDataset
+from utils.CSLNews import CSLNewsDataset
 
 
 # 反标准化+转 PIL
