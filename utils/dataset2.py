@@ -448,21 +448,6 @@ class CSLNewsDataset(Base_Dataset):
             return f"error_{index}", placeholder_pose, "", placeholder_indices, support
 
 
-class CSLDailyDataset(CSLNewsDataset):
-    """CSLDaily数据集"""
-    pass
-
-
-class BOBSLDataset(CSLNewsDataset):
-    """BOBSL数据集"""
-    pass
-
-
-class PhoenixDataset(CSLNewsDataset):
-    """Phoenix数据集"""
-    pass
-
-
 # 4) 工厂
 # -------------------------
 def create_dataloader(args, cfg, phase='train'):
@@ -478,12 +463,6 @@ def create_dataloader(args, cfg, phase='train'):
 
     if args.dataset_name == 'CSL_News':
         dataset = CSLNewsDataset(label_path, args, phase, cfg)
-    elif args.dataset_name == 'CSL_Daily':
-        dataset = CSLDailyDataset(label_path, args, phase, cfg)
-    elif args.dataset_name == 'BOBSL':
-        dataset = BOBSLDataset(label_path, args, phase, cfg)
-    elif args.dataset_name == 'Phoenix':
-        dataset = PhoenixDataset(label_path, args, phase, cfg)
     else:
         raise NotImplementedError(f"不支持的数据集: {args.dataset_name}")
 

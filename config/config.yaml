@@ -2,15 +2,15 @@
 
 seed: 3407
 
-active_datasets: [CSL_Daily, CSL_News]
+active_datasets: [CSL_Daily]
+
 
 datasets:
-
   CSL_Daily:
-    frame_dir:  data/mini_CSL_Daily/sentence
+    rgb_dir: data/mini_CSL_Daily/sentence
     label_dir:  data/mini_CSL_Daily/sentence_label
     pkl_meta:   data/mini_CSL_Daily/sentence_label/csl2020ct_v2.pkl
-    split_file: data/mini_CSL_Daily/sentence_label/split_1.txt
+    split_file: data/mini_CSL_Daily/sentence_label/split_2.txt
 
     use_rgb:  true
     use_pose: false
@@ -21,7 +21,7 @@ datasets:
   temporal:
     ratio: 0.25         # 取原视频的 1/4 帧；根据需要改成 0.5、0.125 等
     jitter: true        # 每个均匀分段内随机取一帧；false 则取段中点
-    min_frames: 8       # 至少取 8 帧（防止短视频过小）
+    min_frames: 4       # 至少取 4 帧（防止短视频过小）
     max_frames: 32      # 最多取 32 帧（限制计算量）；不想限制就设 null
     seed: null          # 可选；设成整数可复现，如 123；不复现就留 null
 
@@ -44,26 +44,26 @@ datasets:
 
 
 
-
-      enable: true
-      # --- 与 SignAugment 对齐 ---
-      size: 224
-      channel: rgb             # rgb | gray
-      gray_as_rgb: false       # gray时是否重复到3通道
-      degrees: 5.0
-      translate: 0.05
-      scale: [0.9, 1.1]
-      shear: 2.0
-      enable_flip: false       # 手语默认不翻转
-      hue: 0.015
-      saturation: 0.40
-      brightness: 0.40
-      contrast: 0.20
-      cutout_p: 0.15
-      cutout_max_area: 0.05
-      cutout_num: [1, 2]
-      mean: [0.485, 0.456, 0.406]
-      std:  [0.229, 0.224, 0.225]
+#
+#      enable: true
+#      # --- 与 SignAugment 对齐 ---
+#      size: 224
+#      channel: rgb             # rgb | gray
+#      gray_as_rgb: false       # gray时是否重复到3通道
+#      degrees: 5.0
+#      translate: 0.05
+#      scale: [0.9, 1.1]
+#      shear: 2.0
+#      enable_flip: false       # 手语默认不翻转
+#      hue: 0.015
+#      saturation: 0.40
+#      brightness: 0.40
+#      contrast: 0.20
+#      cutout_p: 0.15
+#      cutout_max_area: 0.05
+#      cutout_num: [1, 2]
+#      mean: [0.485, 0.456, 0.406]
+#      std:  [0.229, 0.224, 0.225]
 
     # 验证/测试期：只做 resize+normalize（不做随机增强）
     augment_val:

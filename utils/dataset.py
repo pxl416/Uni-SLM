@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-import os, glob, pickle, random
+import os, glob, pickle, random, yaml
 from typing import List, Dict, Any, Optional
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 from torchvision import transforms
 from PIL import Image, UnidentifiedImageError
 from pathlib import Path
+from torch.utils.data import Dataset, DataLoader
+
 
 # ======================
 # 工具函数
@@ -99,7 +100,8 @@ def uniform_sample_indices(num_frames: int, T: int, random_offset: bool = True) 
         return [(s + e - 1) // 2 for s, e in zip(starts, ends)]
 
 
-def load_frames_clip(frame_paths: List[str], indices: List[int], transform=None, size=(224, 224), debug: bool = False) -> torch.Tensor:
+def load_frames_clip(frame_paths: List[str], indices: List[int], transform=None, size=(224, 224),
+                     debug: bool = False) -> torch.Tensor:
     """
     载入指定 indices 的帧并变换，输出 [T,C,H,W]。
     遇到坏帧：向左右邻近(最多±5帧)寻找替代；若仍失败，用黑图占位。
@@ -180,12 +182,12 @@ def load_meta_pkl(pkl_path: str) -> Dict[str, Dict[str, Any]]:
             rid = rec.get("name")
             if not rid:
                 continue
-            txt_char  = "".join(rec.get("label_char", []) or [])
-            txt_word  = " ".join(rec.get("label_word", []) or [])
+            txt_char = "".join(rec.get("label_char", []) or [])
+            txt_word = " ".join(rec.get("label_word", []) or [])
             txt_gloss = " ".join(rec.get("label_gloss", []) or [])
             meta_std[rid] = {
-                "text_char":  txt_char,
-                "text_word":  txt_word,
+                "text_char": txt_char,
+                "text_word": txt_word,
                 "text_gloss": txt_gloss,
                 "length": rec.get("length", None),
                 "signer": rec.get("signer", None),
@@ -207,8 +209,8 @@ def load_meta_pkl(pkl_path: str) -> Dict[str, Dict[str, Any]]:
             for k, rec in obj.items():
                 rid = Path(str(k)).stem
                 meta_std[rid] = {
-                    "text_char":  rec.get("text_char",  ""),
-                    "text_word":  rec.get("text_word",  ""),
+                    "text_char": rec.get("text_char", ""),
+                    "text_word": rec.get("text_word", ""),
                     "text_gloss": rec.get("text_gloss", ""),
                     "length": rec.get("length", None),
                     "signer": rec.get("signer", None),
@@ -221,8 +223,8 @@ def load_meta_pkl(pkl_path: str) -> Dict[str, Dict[str, Any]]:
                 if rid is None:
                     continue
                 meta_std[rid] = {
-                    "text_char":  rec.get("text_char",  ""),
-                    "text_word":  rec.get("text_word",  ""),
+                    "text_char": rec.get("text_char", ""),
+                    "text_word": rec.get("text_word", ""),
                     "text_gloss": rec.get("text_gloss", ""),
                     "length": rec.get("length", None),
                     "signer": rec.get("signer", None),
@@ -235,8 +237,8 @@ def load_meta_pkl(pkl_path: str) -> Dict[str, Dict[str, Any]]:
             if rid is None:
                 continue
             meta_std[rid] = {
-                "text_char":  rec.get("text_char",  ""),
-                "text_word":  rec.get("text_word",  ""),
+                "text_char": rec.get("text_char", ""),
+                "text_word": rec.get("text_word", ""),
                 "text_gloss": rec.get("text_gloss", ""),
                 "length": rec.get("length", None),
                 "signer": rec.get("signer", None),
@@ -251,7 +253,7 @@ class CSLDailyDataset(Dataset):
     def __init__(self,
                  root: str,
                  split: str = "train",
-                 token_level: str = "char",   # "char" | "word" | "gloss"
+                 token_level: str = "char",  # "char" | "word" | "gloss"
                  T: int = 48,
                  random_offset: bool = True,
                  max_text_len: int = 128,
@@ -331,7 +333,8 @@ class CSLDailyDataset(Dataset):
                 else:
                     dropped.append(vid)
             if self.debug:
-                print(f"[DEBUG] text filter: kept={len(kept)} dropped={len(dropped)} (min_text_len={self.min_text_len})")
+                print(
+                    f"[DEBUG] text filter: kept={len(kept)} dropped={len(dropped)} (min_text_len={self.min_text_len})")
             self.items = kept
 
         # 变换
@@ -435,10 +438,12 @@ class CSLDailyDataset(Dataset):
                 ids = list(raw.encode("utf-8"))  # 无词表时用字节占位（仅为避免空）
         elif self.token_level == "word":
             toks = raw.strip().split()
-            ids = [self.word_map.get(w, self.word_map.get("<unk>", 0)) for w in toks] if self.word_map else [hash(w) % 100003 for w in toks]
+            ids = [self.word_map.get(w, self.word_map.get("<unk>", 0)) for w in toks] if self.word_map else [
+                hash(w) % 100003 for w in toks]
         else:
             toks = raw.strip().split()
-            ids = [self.gloss_map.get(g, self.gloss_map.get("<unk>", 0)) for g in toks] if self.gloss_map else [hash(g) % 100003 for g in toks]
+            ids = [self.gloss_map.get(g, self.gloss_map.get("<unk>", 0)) for g in toks] if self.gloss_map else [
+                hash(g) % 100003 for g in toks]
         return torch.tensor(ids[:self.max_text_len], dtype=torch.long)
 
     def __len__(self):
@@ -482,7 +487,8 @@ class CSLDailyDataset(Dataset):
         # gloss（若有）
         if raw_gloss:
             toks = raw_gloss if isinstance(raw_gloss, (list, tuple)) else str(raw_gloss).split()
-            gloss_ids = [self.gloss_map.get(g, self.gloss_map.get("<unk>", 0)) for g in toks] if self.gloss_map else [hash(g) % 100003 for g in toks]
+            gloss_ids = [self.gloss_map.get(g, self.gloss_map.get("<unk>", 0)) for g in toks] if self.gloss_map else [
+                hash(g) % 100003 for g in toks]
             out["gloss"] = torch.tensor(gloss_ids, dtype=torch.long)
         else:
             out["gloss"] = None
@@ -533,102 +539,158 @@ def csl_collate(batch, pad_id: int = 0, pad_video: bool = True):
     return out
 
 
-# ======================
-# 自测
-# ======================
+# 4) 工厂
+# -------------------------
+def _get_from_cfg(cfg, dotted_key: str, default=None):
+    """
+    从 dict 或属性式配置里取值。
+    dotted_key 形如: 'datasets.CSL_Daily.rgb_dir'
+    """
+    cur = cfg
+    for k in dotted_key.split("."):
+        if isinstance(cur, dict):
+            cur = cur.get(k, default)
+        else:
+            cur = getattr(cur, k, default)
+        if cur is default:
+            break
+    return cur
+
+
+def _guess_daily_root_from_cfg(cfg) -> str:
+    """
+    从 cfg 中推断 CSL_Daily 的 root。
+    优先使用 datasets.CSL_Daily.root；
+    否则若给了 rgb_dir 且形如 <root>/sentence，则取其父目录作为 root。
+    """
+    root = _get_from_cfg(cfg, "datasets.CSL_Daily.root", None)
+    if root:
+        return str(root)
+    rgb_dir = _get_from_cfg(cfg, "datasets.CSL_Daily.rgb_dir", None) or \
+              _get_from_cfg(cfg, "datasets.CSL_Daily.rgb_dirs", None)
+    if rgb_dir:
+        p = Path(str(rgb_dir)).resolve()
+        if p.name.lower() == "sentence":
+            return str(p.parent)
+        # 否则直接取其父作为 root（尽力推断）
+        return str(p.parent)
+    raise ValueError(
+        "无法从 cfg 推断 CSL_Daily root。请在 config.yaml 中设置 datasets.CSL_Daily.root 或 rgb_dir=.../sentence")
+
+
+def load_config_from_yaml(config_path: str):
+    """从YAML文件加载配置"""
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    return config
+
+
+def create_dataloader(
+        dataset_name: str,
+        split: str,
+        cfg,
+        batch_size: int = 4,
+        num_workers: int = 4,
+        use_rgb: bool = True,
+        token_level: str = "char",
+        T: int = 16,
+        img_size: int = 224,
+        min_frames: int = 1,
+        skip_empty_text: bool = False,
+        min_text_len: int = 1,
+        debug: bool = False,
+):
+    """
+    构建 DataLoader：
+      - 目前实现 CSL_Daily（帧目录 + sentence_label）
+      - 其他数据集可按需扩展
+    """
+    dataset_name = dataset_name.strip()
+    split = split.lower()
+    assert split in {"train", "val", "dev", "test"}, f"Unknown split: {split}"
+
+    # 如果是字符串路径，则加载配置
+    if isinstance(cfg, str):
+        cfg = load_config_from_yaml(cfg)
+
+    if dataset_name == "CSL_Daily":
+        # 推断 root：应包含 sentence/ 与 sentence_label/
+        root = _guess_daily_root_from_cfg(cfg)
+
+        # 从配置中获取参数
+        dataset_cfg = _get_from_cfg(cfg, "datasets.CSL_Daily", {})
+        temporal_cfg = _get_from_cfg(cfg, "temporal", {})
+
+        # 计算实际采样帧数
+        ratio = temporal_cfg.get("ratio", 0.25)
+        jitter = temporal_cfg.get("jitter", True)
+        min_frames_cfg = temporal_cfg.get("min_frames", 4)
+        max_frames_cfg = temporal_cfg.get("max_frames", 32)
+
+        # 使用配置中的参数覆盖默认参数
+        actual_T = T
+        if split == "train":
+            actual_random_offset = jitter
+        else:
+            actual_random_offset = False
+
+        ds = CSLDailyDataset(
+            root=root,
+            split=("val" if split == "dev" else split),
+            token_level=token_level,
+            T=actual_T,
+            random_offset=actual_random_offset,
+            max_text_len=dataset_cfg.get("max_text_len", 128),
+            use_rgb=use_rgb,
+            frame_base=dataset_cfg.get("rgb_dir", None),
+            rgb_transform=None,  # 使用类内默认
+            img_size=img_size,
+            min_frames=max(min_frames, min_frames_cfg),  # 取较大值
+            skip_empty_text=skip_empty_text,
+            min_text_len=min_text_len,
+            debug=debug,
+        )
+
+        loader = torch.utils.data.DataLoader(
+            ds,
+            batch_size=batch_size,
+            shuffle=(split == "train"),
+            num_workers=num_workers,
+            pin_memory=True,
+            collate_fn=csl_collate,
+            drop_last=(split == "train"),
+        )
+        return loader
+
+    elif dataset_name == "CSL_News":
+        raise NotImplementedError("CSL_News 的 DataLoader 请使用你现有的实现或单独适配。")
+
+    else:
+        raise NotImplementedError(f"不支持的数据集: {dataset_name}")
+
+
+# 可选：快速自测
 if __name__ == "__main__":
-    import argparse, time
+    # 使用正确的配置路径
+    config_path = '/home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/config.yaml'
 
-    def set_seed(seed: int = 42):
-        import numpy as _np, random as _rd
-        _rd.seed(seed)
-        _np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=str, required=True, help="root contains sentence/ and sentence_label/")
-    parser.add_argument("--split", type=str, default="train", choices=["train", "val", "test"])
-    parser.add_argument("--frame_base", type=str, default="", help="override frames base; default <root>/sentence")
-    parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--T", type=int, default=16)
-    parser.add_argument("--size", type=int, default=224, help="output spatial size (size x size)")
-    parser.add_argument("--token_level", type=str, default="char", choices=["char", "word", "gloss"])
-    parser.add_argument("--use_rgb", action="store_true")
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--min_frames", type=int, default=1, help="keep ids with at least this many frames")
-    parser.add_argument("--skip_empty_text", action="store_true")
-    parser.add_argument("--min_text_len", type=int, default=1)
-
-    args = parser.parse_args()
-    set_seed(123)
-
-    root = Path(args.root)
-    assert root.exists(), f"Root not found: {root}"
-
-    print(f"\n=== Testing split={args.split} | token_level={args.token_level} | T={args.T} | use_rgb={args.use_rgb} ===")
-
-    ds = CSLDailyDataset(
-        root=str(root),
-        split=args.split,
-        token_level=args.token_level,
-        T=args.T,
-        random_offset=(args.split == "train"),
-        use_rgb=args.use_rgb,
-        frame_base=(args.frame_base if args.frame_base else None),
-        img_size=args.size,
-        min_frames=args.min_frames,
-        skip_empty_text=args.skip_empty_text,
-        min_text_len=args.min_text_len,
-        debug=args.debug,
+    dl = create_dataloader(
+        dataset_name="CSL_Daily",
+        split="train",
+        cfg=config_path,  # 传递路径字符串，函数内部会加载
+        batch_size=2,
+        num_workers=0,
+        use_rgb=True,
+        token_level="char",
+        T=16,
+        img_size=224,
+        min_frames=1,
+        debug=True,
     )
-
-    print(f"[INFO] frame_base = {ds.frame_base}")
-    print(f"[INFO] kept items = {len(ds)} (min_frames={args.min_frames})")
-
-    assert len(ds) > 0, f"{args.split} dataset is empty. Check sentence/ dirs and split_1.txt."
-
-    # 取一个样本（debug 模式随机抽一个）
-    t0 = time.time()
-    idx = random.randrange(len(ds)) if args.debug else 0
-    s = ds[idx]
-    dt = (time.time() - t0) * 1000
-    print(f"Fetched one sample in {dt:.1f} ms ; dataset size = {len(ds)}")
-    print(f"[sample] idx={idx} id={s['id']}")
-    print(f"  raw_text: {s['raw_text'][:80]}{'...' if len(s['raw_text'])>80 else ''}")
-    print(f"  text_len={s['text_len']}  text_ids.shape={tuple(s['text'].shape)}")
-    if args.use_rgb:
-        print(f"  video.shape={None if s['video'] is None else tuple(s['video'].shape)}  video_len={s['video_len']}")
-
-    # DataLoader & collate
-    loader = torch.utils.data.DataLoader(
-        ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=lambda b: csl_collate(b, pad_id=0),
-        drop_last=False,
-        pin_memory=False,
-        persistent_workers=(args.num_workers > 0),
-    )
-    b = next(iter(loader))
-    print(f"Batch text shape: {tuple(b['text'].shape)} ; lens: {b['text_len'].tolist()}")
-    if args.use_rgb and b["video"] is not None:
-        print(f"Batch video shape: {tuple(b['video'].shape)} ; video_len: {b['video_len'].tolist()}")
-    print("\nAll tests finished.")
-
-
-
-'''
-
-# 仅文本（最快）
-python utils/dataset.py --root /home/pxl416/PeixiLiu/px_proj/pxUni/data/mini_CSL_Daily --batch_size 4 --T 16 --debug
-
-# 加载帧，224 分辨率
-python utils/dataset.py --root /home/pxl416/PeixiLiu/px_proj/pxUni/data/mini_CSL_Daily --use_rgb --batch_size 4 --T 16 --size 224 --debug
-
-# 过滤只保留有文本的样本（更稳）
-python utils/dataset.py --root /home/pxl416/PeixiLiu/px_proj/pxUni/data/mini_CSL_Daily --use_rgb --skip_empty_text --debug
-
-'''
+    print("len(dl.dataset) =", len(dl.dataset))
+    if len(dl.dataset) > 0:
+        b = next(iter(dl))
+        print("Batch keys:", b.keys())
+        print("text:", b["text"].shape, "video:", None if b["video"] is None else b["video"].shape)
+    else:
+        print("数据集为空，请检查数据路径和配置")
