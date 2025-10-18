@@ -63,74 +63,134 @@ def _safe_open(path: str) -> Optional[Image.Image]:
 # -------------------------
 # CSLDaily 数据集（帧目录）
 # -------------------------
-class CSLDailyDataset(BaseDataset):
-    """
-    读取 CSL_Daily 帧目录（sentence/）与可选 split 文件（sentence_label/split_*.txt）。
-    复用 BaseDataset.collate_fn：__getitem__ 返回
-      (name, pose_sample(dict或空), text(str), indices(np.ndarray), support(dict))
-    其中 support 至少包含：
-      - 'rgb_img': [T,3,H,W] Tensor
-      - 'rgb_img_indices': 长度 T 的采样帧索引
-    """
-    def __init__(self, args, cfg, phase: str):
-        super().__init__(args, cfg, phase)
+# class CSLDailyDataset(BaseDataset):
+#     """
+#     读取 CSL_Daily 帧目录（sentence/）与可选 split 文件（sentence_label/split_*.txt）。
+#     复用 BaseDataset.collate_fn：__getitem__ 返回
+#       (name, pose_sample(dict或空), text(str), indices(np.ndarray), support(dict))
+#     其中 support 至少包含：
+#       - 'rgb_img': [T,3,H,W] Tensor
+#       - 'rgb_img_indices': 长度 T 的采样帧索引
+#     """
+#     def __init__(self, args, cfg, phase: str):
+#         super().__init__(args, cfg, phase)
+#
+#         # 1) 读取配置（每数据集块）
+#         ds_cfg = _get(cfg, "datasets.CSL_Daily", {}) or {}
+#         root = _get(ds_cfg, "root")
+#         if not root:
+#             raise ValueError("[CSL_Daily] 缺少 datasets.CSL_Daily.root")
+#         self.root = os.path.abspath(root)
+#
+#         rgb_dir_conf    = _get(ds_cfg, "rgb_dir", "sentence")
+#         split_file_conf = _get(ds_cfg, "split_file", None)
+#
+#         self.rgb_dir    = _abs_path(self.root, rgb_dir_conf)
+#         self.split_file = _abs_path(self.root, split_file_conf) if split_file_conf else None
+#
+#         # 基本开关
+#         self.use_rgb_ds = bool(_get(ds_cfg, "use_rgb", True))
+#         # 与 Base 的 args.rgb_support 联合：只要任一为 False 就禁用 RGB
+#         self.rgb_support = self.rgb_support and self.use_rgb_ds
+#
+#         # 文本相关（当前只返回字符串；需要 id 编码可在此扩展）
+#         self.token_level  = _get(ds_cfg, "token_level", "char")
+#         self.max_text_len = int(_get(ds_cfg, "max_text_len", 128))
+#
+#         # temporal（注意：你的 config 把 augment/augment_val 放在 temporal 下面）
+#         tmp_cfg   = _get(ds_cfg, "temporal", {}) or {}
+#         self.max_length = int(_get(tmp_cfg, "max_frames", _get(tmp_cfg, "T", self.max_length)))  # 优先用 max_frames/T 作为长度
+#         self.jitter     = bool(_get(tmp_cfg, "jitter", True))
+#         self.min_frames = int(_get(tmp_cfg, "min_frames", 1))
+#
+#         aug_train_cfg = _get(tmp_cfg, "augment", {}) or {}
+#         aug_val_cfg   = _get(tmp_cfg, "augment_val", {}) or {}
+#
+#         # 2) 早失败校验
+#         if not os.path.isdir(self.rgb_dir):
+#             raise FileNotFoundError(f"[CSL_Daily] rgb_dir 不存在: {self.rgb_dir}")
+#         if self.split_file and not os.path.exists(self.split_file):
+#             print(f"[CSL_Daily][WARN] split_file 不存在，改为扫描 {self.rgb_dir}: {self.split_file}")
+#
+#         # 3) 构建样本列表
+#         self.items: List[str] = self._collect_items()
+#         if len(self.items) == 0:
+#             raise RuntimeError("[CSL_Daily] 样本列表为空，请检查 rgb_dir/split_file 配置是否正确。")
+#
+#         # 4) 保存增强配置，供 transform 构建
+#         self.aug_train_cfg = aug_train_cfg
+#         self.aug_val_cfg   = aug_val_cfg
+#
+#         # 5) 构建 transform（通过 Base 的钩子）
+#         self.data_transform = self.build_train_transform() if self.phase == "train" else self.build_val_transform()
+#
+#         # 6) 调试信息
+#         if getattr(args, "debug", False):
+#             print("[CSL_Daily][DEBUG] root:", self.root)
+#             print("[CSL_Daily][DEBUG] rgb_dir:", self.rgb_dir)
+#             print("[CSL_Daily][DEBUG] split_file:", self.split_file)
+#             print("[CSL_Daily][DEBUG] items:", len(self.items), "例：", self.items[:5])
+#             print("[CSL_Daily][DEBUG] max_length:", self.max_length, "jitter:", self.jitter, "min_frames:", self.min_frames)
+#             print("[CSL_Daily][DEBUG] rgb_support:", self.rgb_support)
 
-        # 1) 读取配置（每数据集块）
+class CSLDailyDataset(BaseDataset):
+    def __init__(self, args, cfg, phase: str):
+        # 1) 先读数据集配置 & 增强配置 —— 注意：这些属性要在 super() 之前就准备好
         ds_cfg = _get(cfg, "datasets.CSL_Daily", {}) or {}
         root = _get(ds_cfg, "root")
         if not root:
             raise ValueError("[CSL_Daily] 缺少 datasets.CSL_Daily.root")
         self.root = os.path.abspath(root)
 
-        rgb_dir_conf    = _get(ds_cfg, "rgb_dir", "sentence")
+        rgb_dir_conf = _get(ds_cfg, "rgb_dir", "sentence")
         split_file_conf = _get(ds_cfg, "split_file", None)
-
-        self.rgb_dir    = _abs_path(self.root, rgb_dir_conf)
+        self.rgb_dir = _abs_path(self.root, rgb_dir_conf)
         self.split_file = _abs_path(self.root, split_file_conf) if split_file_conf else None
 
-        # 基本开关
-        self.use_rgb_ds = bool(_get(ds_cfg, "use_rgb", True))
-        # 与 Base 的 args.rgb_support 联合：只要任一为 False 就禁用 RGB
-        self.rgb_support = self.rgb_support and self.use_rgb_ds
-
-        # 文本相关（当前只返回字符串；需要 id 编码可在此扩展）
-        self.token_level  = _get(ds_cfg, "token_level", "char")
+        # 文本/temporal/增强参数 —— 这些会在 build_*_transform 用到，所以现在就放到 self 上
+        self.token_level = _get(ds_cfg, "token_level", "char")
         self.max_text_len = int(_get(ds_cfg, "max_text_len", 128))
 
-        # temporal（注意：你的 config 把 augment/augment_val 放在 temporal 下面）
-        tmp_cfg   = _get(ds_cfg, "temporal", {}) or {}
-        self.max_length = int(_get(tmp_cfg, "max_frames", _get(tmp_cfg, "T", self.max_length)))  # 优先用 max_frames/T 作为长度
-        self.jitter     = bool(_get(tmp_cfg, "jitter", True))
+        tmp_cfg = _get(ds_cfg, "temporal", {}) or {}
+        self.jitter = bool(_get(tmp_cfg, "jitter", True))
         self.min_frames = int(_get(tmp_cfg, "min_frames", 1))
+        # 先记下“想要的” max_length，super() 后再覆盖 Base 的默认
+        desired_max_len = _get(tmp_cfg, "max_frames", _get(tmp_cfg, "T", None))
 
-        aug_train_cfg = _get(tmp_cfg, "augment", {}) or {}
-        aug_val_cfg   = _get(tmp_cfg, "augment_val", {}) or {}
+        # !!! 关键：增强配置要在 super() 之前就赋值，供 Base.__init__ 里调用 build_*_transform 使用
+        self.aug_train_cfg = _get(tmp_cfg, "augment", {}) or {}
+        self.aug_val_cfg = _get(tmp_cfg, "augment_val", {}) or {}
 
-        # 2) 早失败校验
+        # 2) 再调用 Base 初始化（这里面会调用 build_train_transform/build_val_transform）
+        super().__init__(args, cfg, phase)
+
+        # 3) 训练时是否启用 RGB（与 Base 的 args.rgb_support 联合）
+        self.use_rgb_ds = bool(_get(ds_cfg, "use_rgb", True))
+        self.rgb_support = self.rgb_support and self.use_rgb_ds
+
+        # 4) 如果数据集指定了 max_length，就覆盖 Base 中的默认
+        if desired_max_len is not None:
+            self.max_length = int(desired_max_len)
+
+        # 5) 基本校验
         if not os.path.isdir(self.rgb_dir):
             raise FileNotFoundError(f"[CSL_Daily] rgb_dir 不存在: {self.rgb_dir}")
         if self.split_file and not os.path.exists(self.split_file):
             print(f"[CSL_Daily][WARN] split_file 不存在，改为扫描 {self.rgb_dir}: {self.split_file}")
 
-        # 3) 构建样本列表
+        # 6) 构建样本列表
         self.items: List[str] = self._collect_items()
         if len(self.items) == 0:
             raise RuntimeError("[CSL_Daily] 样本列表为空，请检查 rgb_dir/split_file 配置是否正确。")
 
-        # 4) 保存增强配置，供 transform 构建
-        self.aug_train_cfg = aug_train_cfg
-        self.aug_val_cfg   = aug_val_cfg
-
-        # 5) 构建 transform（通过 Base 的钩子）
-        self.data_transform = self.build_train_transform() if self.phase == "train" else self.build_val_transform()
-
-        # 6) 调试信息
+        # 7) 调试信息（可选）
         if getattr(args, "debug", False):
             print("[CSL_Daily][DEBUG] root:", self.root)
             print("[CSL_Daily][DEBUG] rgb_dir:", self.rgb_dir)
             print("[CSL_Daily][DEBUG] split_file:", self.split_file)
             print("[CSL_Daily][DEBUG] items:", len(self.items), "例：", self.items[:5])
-            print("[CSL_Daily][DEBUG] max_length:", self.max_length, "jitter:", self.jitter, "min_frames:", self.min_frames)
+            print("[CSL_Daily][DEBUG] max_length:", self.max_length, "jitter:", self.jitter, "min_frames:",
+                  self.min_frames)
             print("[CSL_Daily][DEBUG] rgb_support:", self.rgb_support)
 
     # -------- transform 构建（覆盖基类钩子） -------- #

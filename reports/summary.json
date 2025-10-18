@@ -1,8 +1,0 @@
-{
-  "num_samples": 36,
-  "T_min": 75,
-  "T_max": 128,
-  "T_mean": 125.58333333333333,
-  "text_len_mean": 29.25,
-  "kp_conf_mean": 0.9088041042978248
-}

@@ -8,9 +8,9 @@ temporal: {}
 # ---------- 数据集配置 ----------
 datasets:
   CSL_Daily:
-    root: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily
+    root: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/
     rgb_dir: sentence                         # 相对 root
-    split_file: sentence_label/split_2.txt    # 相对 root
+    split_file: sentence_label/split_1.txt    # 相对 root
     max_text_len: 128
     use_rgb:  true
     use_pose: false
@@ -110,8 +110,8 @@ Fusion:
   rgb_text:  { enabled: false }
 
 Training:
-  epochs: 20
-  batch_size: 4
+  epochs: 10
+  batch_size: 8
   learning_rate: 1e-4
   grad_clip: 1.0
 
@@ -121,8 +121,8 @@ optimizer:
 
 wandb:
   use: True
-  api_key:
-  run_name: multi-ds0928
-  project: SignLanguage-multi-ds
+#  api_key: 0c563568ac7ebb0941d93b54803b7101d16280b6
+  run_name: daily_all_1018
+  project: Uni-slm
 
-save_dir: checkpoints/multi-ds0928
+save_dir: checkpoints/daily_all_1018
