@@ -10,7 +10,7 @@ _INT_RE = re.compile(r"^[+-]?[0-9]+$")
 _FLOAT_RE = re.compile(r"^[+-]?(\d+\.\d*|\.\d+|\d+)([eE][+-]?\d+)?$")
 
 # ---------- 各数据集的“必需字段”定义（可扩展） ----------
-# 注意：这里用的是你当前 config.yaml 的键名（单数）
+# 注意：这里用的是你当前 pretrain.yaml 的键名（单数）
 REQUIRED_SCHEMAS: Dict[str, Tuple[str, ...]] = {
     # 帧目录版的 CSL_Daily
     "CSL_Daily": (
@@ -197,5 +197,5 @@ def iter_active_datasets(cfg: SimpleNamespace) -> Iterable[Tuple[str, SimpleName
     for name in cfg.active_datasets:
         yield name, getattr(cfg.datasets, name)
 
-def load_train_config(config_path: str = "config/config.yaml") -> SimpleNamespace:
+def load_train_config(config_path: str = "config/pretrain.yaml") -> SimpleNamespace:
     return load_config(config_path)

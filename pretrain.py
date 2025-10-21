@@ -107,6 +107,38 @@ class Trainer:
         os.makedirs(self.wts_dir, exist_ok=True)
         logger.info(f"Save directory: {self.save_dir}")
 
+    def save_split_weights(self, epoch: int, tag: str):
+        """
+        按模态/分支分别保存纯权重（state_dict），便于下游精确加载。
+        目录：weights/<tag>/{rgb_encoder.pt, text_encoder.pt, proj_rgb.pt, proj_text.pt}
+        """
+        out_dir = os.path.join(self.wts_dir, tag)
+        os.makedirs(out_dir, exist_ok=True)
+
+        # 1) Encoders
+        if "rgb" in self.models:
+            torch.save(self.models["rgb"].state_dict(), os.path.join(out_dir, "rgb_encoder.pt"))
+        if "text" in self.models:
+            torch.save(self.models["text"].state_dict(), os.path.join(out_dir, "text_encoder.pt"))
+
+        # 2) Projectors（与预训练形状一致）
+        if isinstance(self.proj, nn.ModuleDict):
+            if "rgb" in self.proj:
+                torch.save(self.proj["rgb"].state_dict(), os.path.join(out_dir, "proj_rgb.pt"))
+            if "text" in self.proj:
+                torch.save(self.proj["text"].state_dict(), os.path.join(out_dir, "proj_text.pt"))
+
+        # 3) 记录一条日志 &（可选）W&B artifact
+        logger.info(f"[SplitSaved] {out_dir}")
+        if wandb.run:
+            try:
+                # 直接保存目录下的文件（W&B 会逐个文件记录）
+                for fname in os.listdir(out_dir):
+                    wandb.save(os.path.join(out_dir, fname))
+            except Exception as e:
+                logger.warning(f"W&B split save failed: {e}")
+
+
     # ---------- 模型 ----------
     def setup_models(self):
         self.models = {}
@@ -161,7 +193,7 @@ class Trainer:
 
     # ---------- 损失 ----------
     def setup_loss(self):
-        self.loss_fn = build_loss(self.config)  # 例如对比学习的 infoNCE
+        self.loss_fn = build_loss(self.config)  # 损失函数的设定
         logger.info(f"Initialized loss for task: {cfg_get(self.config, 'Pretraining.task', 'contrastive')}")
 
     # ---------- 数据 ----------
@@ -172,7 +204,7 @@ class Trainer:
         ds_list = cfg_get(self.config, "active_datasets", []) or []
 
         if not ds_list:
-            raise ValueError("active_datasets 为空，请在 config.yaml 顶层设置 active_datasets: [CSL_Daily, CSL_News] 等")
+            raise ValueError("active_datasets 为空，请在 pretrain.yaml 顶层设置 active_datasets: [CSL_Daily, CSL_News] 等")
 
         for ds_name in ds_list:
             # 修复：正确处理 SimpleNamespace 配置
@@ -307,16 +339,10 @@ class Trainer:
                     desc=f"Epoch {epoch + 1}/{cfg_get(self.config, 'Training.epochs', 20)}")
 
         for step, (ds_name, (src_input, tgt_input)) in enumerate(pbar):
-            # ctx = autocast() if torch.cuda.is_available() else nullcontext()
             ctx = (torch.amp.autocast('cuda') if torch.cuda.is_available() else nullcontext())
             with ctx:
                 loss = self.compute_pretrain_loss(src_input, tgt_input)
 
-            # self.optimizer.zero_grad(set_to_none=True)
-            # self.scaler.scale(loss).backward()
-            # clip_grad_norm_(trainable_params, max_norm=cfg_get(self.config, 'Training.grad_clip', 1.0))
-            # self.scaler.step(self.optimizer)
-            # self.scaler.update()
             self.optimizer.zero_grad(set_to_none=True)
             self.scaler.scale(loss).backward()
             # 先反缩放再裁剪
@@ -340,9 +366,11 @@ class Trainer:
         avg = total_loss / max(1, sum(len(ld) for ld in self.train_loaders.values()))
         return avg
 
+
     def train(self):
         logger.info("Starting training...")
         epochs = int(cfg_get(self.config, "Training.epochs", 20))
+        split_flag = cfg_get(self.config, "Saving.split_modalities", True)
 
         for epoch in range(epochs):
             # 1) 训练
@@ -351,10 +379,14 @@ class Trainer:
             if wandb.run:
                 wandb.log({"train/epoch_loss": float(train_loss), "epoch": epoch})
 
-            # 2) 每个 epoch 保存一份 + latest
+            # 2) 保存
             tag = f"epoch_{epoch + 1:03d}"
             self.save_both_formats(epoch=epoch, tag=tag)
             self.save_both_formats(epoch=epoch, tag="latest")
+
+            if split_flag:
+                self.save_split_weights(epoch=epoch, tag=tag)
+                self.save_split_weights(epoch=epoch, tag="latest")
 
             # 3) 调度
             if self.scheduler is not None:
@@ -362,7 +394,10 @@ class Trainer:
 
         # 4) 训练结束再保存 final
         self.save_both_formats(epoch=epochs, tag="final")
+        if split_flag:
+            self.save_split_weights(epoch=epochs, tag="final")
         logger.info("Training completed!")
+
 
 
 # ------------------------------
@@ -371,7 +406,7 @@ class Trainer:
 def main():
     set_seed(42)
 
-    # 加载配置（你已有的工具会把 YAML 读成 Namespace）
+    # 加载配置（已有的工具会把 YAML 读成 Namespace）
     cfg = load_train_config()
     logger.info("Loaded configuration")
 

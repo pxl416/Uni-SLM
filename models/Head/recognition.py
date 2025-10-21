@@ -2,130 +2,240 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, List, Dict, Tuple
+
+
+class SinusoidalPositionalEncoding(nn.Module):
+    """
+    标准正弦位置编码（Transformer 论文同款）
+    输入/输出形状：[B, T, D]
+    """
+    def __init__(self, d_model: int, dropout: float = 0.0, max_len: int = 10000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)                       # [T, D]
+        position = torch.arange(0, max_len).unsqueeze(1)         # [T, 1]
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-torch.log(torch.tensor(10000.0)) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)             # 偶数维
+        pe[:, 1::2] = torch.cos(position * div_term)             # 奇数维
+        self.register_buffer("pe", pe)                           # 不参与训练
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, T, D]
+        T = x.size(1)
+        x = x + self.pe[:T, :].unsqueeze(0)  # [1, T, D]
+        return self.dropout(x)
 
 
 class RecognitionHeadCTC(nn.Module):
-    def __init__(self,
-                 in_dim: int,
-                 num_classes: int,
-                 hidden: int = 512,
-                 nlayer: int = 2,
-                 dropout: float = 0.1,
-                 blank_id: int = None):
-        """
-        Continuous Sign Language Recognition (CSLR) Head with CTC Loss.
-        【仅用于评估，不参与训练】
+    """
+    连续手语识别（CSLR）CTC 头（可训练版）
 
-        Args:
-            in_dim: 输入特征维度 (来自 Encoder，例如 PoseEncoder/RGBEncoder 融合后)
-            num_classes: 词表大小 (含 blank)
-            hidden: Transformer 编码维度
-            nlayer: Transformer 层数
-            dropout: dropout 概率
-            blank_id: blank 的索引，默认是 num_classes-1
-        """
+    形状契约：
+      - forward 输入：seq [B, T, in_dim]，可选 src_key_padding_mask [B, T] (bool，True 表示 padding)
+      - forward 输出：logits [T, B, V]  （V = num_classes）
+      - compute_loss 期望：
+            logits [T, B, V]（未过 softmax），
+            targets: 1D LongTensor，拼接后的稀疏标签，
+            input_lengths: [B]，为每条样本的有效输入长度（与 logits 的时间步一致），
+            target_lengths: [B]，为每条样本的目标长度。
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        num_classes: int,
+        hidden_dim: int = 512,
+        num_layers: int = 2,
+        nhead: int = 8,
+        dropout: float = 0.1,
+        blank_id: Optional[int] = None,
+        use_positional_encoding: bool = True,
+        pos_dropout: float = 0.0,
+    ):
         super().__init__()
         self.num_classes = num_classes
-        self.blank_id = blank_id if blank_id is not None else num_classes - 1
+        self.blank_id = (num_classes - 1) if blank_id is None else int(blank_id)
 
-        # 映射到 hidden 维度
-        self.proj = nn.Linear(in_dim, hidden)
-
-        # Transformer encoder
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=hidden,
-            nhead=8,
-            dim_feedforward=hidden * 4,
-            dropout=dropout,
-            batch_first=True
+        # 线性映射到 Transformer 维度
+        self.input_proj = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=nlayer)
 
-        # 分类器
-        self.classifier = nn.Linear(hidden, num_classes)
+        # 位置编码（可关）
+        self.pos_encoding = (
+            SinusoidalPositionalEncoding(hidden_dim, pos_dropout) if use_positional_encoding else nn.Identity()
+        )
 
-        # 🚫 冻结所有参数，不参与训练
-        self._freeze_parameters()
+        # Transformer Encoder（batch_first=True 便于与 [B, T, D] 对齐）
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=nhead,
+            dim_feedforward=hidden_dim * 4,
+            dropout=dropout,
+            batch_first=True,
+            activation="gelu",
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
 
-    def _freeze_parameters(self):
-        """冻结所有参数，确保不参与梯度更新"""
-        for param in self.parameters():
-            param.requires_grad = False
-        self.eval()  # 设置为评估模式
+        # 分类头
+        self.classifier = nn.Linear(hidden_dim, num_classes)
 
-    def forward(self, seq: torch.Tensor, src_key_padding_mask=None) -> torch.Tensor:
+    # --------- 前向 ---------
+    def forward(
+        self,
+        seq: torch.Tensor,                        # [B, T, in_dim]
+        src_key_padding_mask: Optional[torch.Tensor] = None  # [B, T] (bool), True=padding
+    ) -> torch.Tensor:
         """
-        Args:
-            seq: [B, T, D]  输入序列特征
-            src_key_padding_mask: [B, T]  padding mask (True=padding位置)
-        Returns:
-            logits: [B, T, V]  分类 logits
+        返回 logits，形状 [T, B, V]，以便直接对接 torch.nn.CTCLoss
         """
-        # 使用 torch.no_grad() 确保不计算梯度
-        with torch.no_grad():
-            x = self.proj(seq)  # [B, T, H]
-            x = self.encoder(x, src_key_padding_mask=src_key_padding_mask)
-            logits = self.classifier(x)  # [B, T, V]
+        # 预处理 & 位置编码
+        x = self.input_proj(seq)                  # [B, T, H]
+        x = self.pos_encoding(x)                  # [B, T, H]
+
+        # 注意 mask 的 dtype 必须是 bool，True 表示 padding
+        if src_key_padding_mask is not None and src_key_padding_mask.dtype != torch.bool:
+            src_key_padding_mask = src_key_padding_mask.to(torch.bool)
+
+        # Transformer 编码
+        x = self.encoder(x, src_key_padding_mask=src_key_padding_mask)  # [B, T, H]
+
+        # 分类到词表
+        logits_bt = self.classifier(x)            # [B, T, V]
+
+        # CTC 期望 [T, B, V]
+        logits = logits_bt.transpose(0, 1).contiguous()
         return logits
 
-    def compute_loss(self, logits, targets, input_lengths, target_lengths) -> torch.Tensor:
+    # --------- 损失 ---------
+    def compute_loss(
+        self,
+        logits: torch.Tensor,             # [T, B, V]
+        targets: torch.Tensor,            # [sum(target_lengths)]
+        input_lengths: torch.Tensor,      # [B]
+        target_lengths: torch.Tensor,     # [B]
+    ) -> torch.Tensor:
         """
-        Compute CTC loss for evaluation only.
-
-        Args:
-            logits: [B, T, V]
-            targets: LongTensor, shape [sum(target_lengths)] 稀疏拼接的标签
-            input_lengths: LongTensor, shape [B] 每个样本的输入长度
-            target_lengths: LongTensor, shape [B] 每个样本的标签长度
+        计算 CTC 损失。内部做 log_softmax，不要在外面先 softmax。
         """
-        assert logits.size(1) >= int(input_lengths.max()), \
-            f"Input length {int(input_lengths.max())} exceeds logit length {logits.size(1)}"
+        # 断言时间维长度匹配
+        T, B, _ = logits.shape
+        assert int(input_lengths.max()) <= T, \
+            f"Input length {int(input_lengths.max())} exceeds logit time {T}"
 
-        with torch.no_grad():
-            log_probs = F.log_softmax(logits, dim=-1).transpose(0, 1)  # [T, B, V]
-            return F.ctc_loss(
-                log_probs,
-                targets,
-                input_lengths,
-                target_lengths,
-                blank=self.blank_id,
-                zero_infinity=True
-            )
+        # 保证长度张量在同一设备/整型
+        dev = logits.device
+        input_lengths = input_lengths.to(dev).to(torch.int32)
+        target_lengths = target_lengths.to(dev).to(torch.int32)
 
-    def compute_metrics(self, features, targets, input_lengths, target_lengths):
+        log_probs = F.log_softmax(logits, dim=-1)  # [T, B, V]
+        loss = F.ctc_loss(
+            log_probs,
+            targets.to(dev),
+            input_lengths,
+            target_lengths,
+            blank=self.blank_id,
+            reduction="mean",
+            zero_infinity=True,
+        )
+        return loss
+
+    # --------- 贪婪解码（用于评测） ---------
+    @torch.no_grad()
+    def ctc_greedy_decode(
+        self,
+        logits: torch.Tensor,             # [T, B, V]
+        collapse_repeats: bool = True,
+    ) -> List[List[int]]:
         """
-        计算识别任务的评估指标
-        Returns:
-            dict: 包含各种评估指标的字典
+        返回长度为 B 的列表，每个元素是去重&去 blank 的 token id 序列
         """
-        with torch.no_grad():
-            # 前向传播获取logits
-            logits = self.forward(features)
+        pred = logits.argmax(dim=-1)      # [T, B]
+        pred = pred.transpose(0, 1)       # [B, T]
+        results: List[List[int]] = []
+        for seq in pred:
+            out = []
+            prev = None
+            for p in seq.tolist():
+                if collapse_repeats and p == prev:
+                    prev = p
+                    continue
+                if p != self.blank_id:
+                    out.append(p)
+                prev = p
+            results.append(out)
+        return results
 
-            # 计算CTC损失
-            ctc_loss = self.compute_loss(logits, targets, input_lengths, target_lengths)
+    # --------- 简单 CER（字符级编辑距离 / 参考可选） ---------
+    @staticmethod
+    def _edit_distance(a: List[int], b: List[int]) -> int:
+        """标准 Levenshtein 距离（O(n*m) 动态规划），避免外部依赖"""
+        n, m = len(a), len(b)
+        dp = [[0]*(m+1) for _ in range(n+1)]
+        for i in range(n+1): dp[i][0] = i
+        for j in range(m+1): dp[0][j] = j
+        for i in range(1, n+1):
+            for j in range(1, m+1):
+                cost = 0 if a[i-1] == b[j-1] else 1
+                dp[i][j] = min(
+                    dp[i-1][j] + 1,      # 删除
+                    dp[i][j-1] + 1,      # 插入
+                    dp[i-1][j-1] + cost  # 替换
+                )
+        return dp[n][m]
 
-            # 可以添加更多评估指标
-            metrics = {
-                "ctc_loss": ctc_loss.item(),
-                "perplexity": torch.exp(ctc_loss).item(),
-            }
-
-            # 这里可以添加识别准确率、编辑距离等指标
-            # metrics.update(self._compute_accuracy(logits, targets, input_lengths))
-
-            return metrics
-
-    def train(self, mode: bool = True):
+    @torch.no_grad()
+    def compute_metrics(
+        self,
+        features: torch.Tensor,                 # [B, T, in_dim]
+        targets_packed: torch.Tensor,           # [sum(target_lengths)]
+        input_lengths: torch.Tensor,            # [B]
+        target_lengths: torch.Tensor,           # [B]
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+        decode_for_cer: bool = False
+    ) -> Dict[str, float]:
         """
-        重写train方法，确保始终处于评估模式
-        防止意外被设置为训练模式
+        计算评测指标：
+          - ctc_loss（必有）
+          - 可选：CER（需要把 packed target 还原为逐样本目标）
         """
-        return super().train(False)  # 强制保持评估模式
+        logits = self.forward(features, src_key_padding_mask=src_key_padding_mask)   # [T, B, V]
+        loss = self.compute_loss(logits, targets_packed, input_lengths, target_lengths)
+
+        metrics = {
+            "ctc_loss": float(loss.item()),
+            "perplexity": float(torch.exp(loss).item()),
+        }
+
+        if decode_for_cer:
+            # 1) 解码预测
+            pred_ids = self.ctc_greedy_decode(logits, collapse_repeats=True)  # List[List[int]]，长度 B
+
+            # 2) 还原目标序列（从 packed 还原）
+            tlist: List[List[int]] = []
+            offset = 0
+            tlens = target_lengths.tolist()
+            for L in tlens:
+                tlist.append(targets_packed[offset:offset+L].tolist())
+                offset += L
+
+            # 3) 计算 CER
+            total_edits, total_chars = 0, 0
+            for hyp, ref in zip(pred_ids, tlist):
+                total_edits += self._edit_distance(hyp, ref)
+                total_chars += max(1, len(ref))
+            cer = total_edits / total_chars
+            metrics["cer"] = float(cer)
+
+        return metrics
 
     def __repr__(self):
-        return f"RecognitionHeadCTC(in_dim={self.proj.in_features}, " \
-               f"num_classes={self.num_classes}, " \
-               f"hidden={self.proj.out_features}, " \
-               f"nlayer={len(self.encoder.layers)}, " \
-               f"frozen=True)"
+        return (f"RecognitionHeadCTC(in_dim={self.input_proj[0].in_features}, "
+                f"num_classes={self.num_classes}, "
+                f"hidden_dim={self.input_proj[0].out_features}, "
+                f"n_layers={len(self.encoder.layers)}, "
+                f"trainable=True, blank_id={self.blank_id})")
