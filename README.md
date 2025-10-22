@@ -17,5 +17,30 @@ The framework aims to share a **common multimodal encoder** (RGB, Pose, and Text
 
 ---
 
-## 🧱 Project Structure
+
+## ⚙️ Installation
+
+### 1️⃣ Create Environment
+```bash
+git clone https://github.com/yourname/uni-slm.git
+cd uni-slm
+
+conda create -n uni-slm python=3.10
+conda activate uni-slm
+pip install -r requirements.txt
+```
+
+### 2️⃣ Install Optional Components
+
+For translation tasks (mT5 or multilingual support):
+
+Dataset Setup
+
+Uni-SLM currently supports datasets including:
+
+CSL-Daily
+
+CSL-News
+
+BOBSL (partial support)
 
