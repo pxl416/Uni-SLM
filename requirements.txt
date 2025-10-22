@@ -1,29 +1,26 @@
-# Core
+# Core Dependencies
 torch>=1.12.0
 torchvision>=0.13.0
 einops>=0.4.0
 tqdm>=4.64.0
-numpy # numpy>=1.23.0
-scipy # scipy>=1.8.0
-numpy
+numpy>=1.23.0
+scipy>=1.8.0
 
 # Transformers & NLP
 transformers>=4.20.0
-sentencepiece>=0.1.96  # MT5/T5
-protobuf # protobuf<=3.20.3
+sentencepiece>=0.1.96
+protobuf<=3.20.3  # limit for transformers compatibility
 
-# Data & IO
+# Data & I/O
 decord>=0.6.0
 pillow>=9.2.0
 opencv-python>=4.6.0
 
 # Visualization & Logging
-matplotlib  # matplotlib>=3.5.0
+matplotlib>=3.5.0
 seaborn>=0.11.0
 wandb>=0.13.0
-pillow
 
-# Others / Utilities
-scikit-learn # scikit-learn>=1.1.0
-
-
+# Utilities
+scikit-learn>=1.1.0
+pyyaml>=6.0  # for YAML config parsing
