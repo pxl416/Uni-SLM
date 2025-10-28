@@ -11,7 +11,8 @@
 - **Sign Language Recognition (CSLR)**  
 - **Sign Language Retrieval (Text↔Video)**  
 - **Sign Language Translation (SLT)**  
-- (Future) **Segmentation & Generation**
+- **Sign Language Segmentation (SLS)**
+- (Future) **Generation**
 
 The framework aims to share a **common multimodal encoder** (RGB, Pose, and Text) and support **task-specific heads** for diverse downstream tasks, following a unified **Adaptive Information Bottleneck (AdaIB)** optimization principle.
 
