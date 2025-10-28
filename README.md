@@ -22,7 +22,7 @@ The framework aims to share a **common multimodal encoder** (RGB, Pose, and Text
 
 ### 1️⃣ Create Environment
 ```bash
-git clone https://https://github.com/pxl416/Uni-SLM.git
+git clone https://github.com/pxl416/Uni-SLM.git
 cd uni-slm
 
 conda create -n uni-slm python=3.10
