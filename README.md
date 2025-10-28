@@ -9,7 +9,7 @@
 **Uni-SLM** is a unified framework for **sign language understanding** that integrates multiple core tasks within a single model:
 
 - **Sign Language Recognition (CSLR)**  
-- **Sign Language Retrieval (Text↔Video)**  
+- **Sign Language Retrieval (T2V, V2T)**  
 - **Sign Language Translation (SLT)**  
 - **Sign Language Segmentation (SLS)**
 - (Future) **Generation**
