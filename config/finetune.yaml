@@ -44,16 +44,17 @@ Training:
 
 # ========= Finetune control =========
 Finetune:
-  task: retrieval           # retrieval / recognition / translation
+  task: translation           # retrieval / recognition / translation
   train_split: dev          # 你日志里就是用 dev 做训练、test 做评估
   eval_split: test
   amp: true                 # 开启混合精度
   freeze: []                # 例: ["rgb","text","proj"]
-  # weights:                 # 如需加载单独权重可打开
-  #   rgb_path:  /path/to/rgb_encoder.pt
-  #   text_path: /path/to/text_encoder.pt
-  #   proj_rgb_path:  /path/to/proj_rgb.pt
-  #   proj_text_path: /path/to/proj_text.pt
+  weights:                 # 如需加载单独权重可打开
+    rgb_path: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/checkpoints/pretrain_daily_1022_i3d_epoch30/weights/latest/rgb_encoder.pt
+    text_path: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/checkpoints/pretrain_daily_1022_i3d_epoch30/weights/latest/text_encoder.pt
+    proj_rgb_path: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/checkpoints/pretrain_daily_1022_i3d_epoch30/weights/latest/proj_rgb.pt
+    proj_text_path: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/checkpoints/pretrain_daily_1022_i3d_epoch30/weights/latest/proj_text.pt
+
 
 # ========= Evaluation heads config (dims需与你模型一致) =========
 Evaluation:
@@ -81,4 +82,4 @@ Evaluation:
 wandb:
   use: true
   project: uni-slm-finetune
-  run_name: csl-daily-retrieval-split1
+  run_name: csl-daily-retrieval-split1-1026
