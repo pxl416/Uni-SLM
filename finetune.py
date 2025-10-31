@@ -136,12 +136,49 @@ def build_backbones(cfg, device):
     return rgb, text, proj, Dv, Dt, P
 
 
+# def load_split_weights_if_any(cfg, rgb, text, proj, device):
+#     if not cfg_get(cfg, "Finetune.weights", None):
+#         logger.info("[Load] Finetune.weights 未提供，跳过显式加载（可能用随机初始化/继续训练）。")
+#         return
+#
+#     def _load(path, module, name):
+#         if not path:
+#             logger.warning(f"[Load] 跳过 {name}（路径为空）")
+#             return
+#         if not os.path.isfile(path):
+#             logger.warning(f"[Load] 跳过 {name}（路径不存在）：{path}")
+#             return
+#         try:
+#             sd = torch.load(path, map_location=device)
+#             module.load_state_dict(sd, strict=True)
+#             logger.info(f"[Load] {name} <- {path}")
+#         except Exception as e:
+#             logger.error(f"[Load] 加载 {name} 失败: {e}")
+#
+#     _load(cfg_get(cfg, "Finetune.weights.rgb_path"),       rgb,             "rgb_encoder")
+#     _load(cfg_get(cfg, "Finetune.weights.text_path"),      text,            "text_encoder")
+#     _load(cfg_get(cfg, "Finetune.weights.proj_rgb_path"),  proj.get("rgb"), "proj_rgb")
+#     _load(cfg_get(cfg, "Finetune.weights.proj_text_path"), proj.get("text"),"proj_text")
+
+
+
 def load_split_weights_if_any(cfg, rgb, text, proj, device):
     if not cfg_get(cfg, "Finetune.weights", None):
         logger.info("[Load] Finetune.weights 未提供，跳过显式加载（可能用随机初始化/继续训练）。")
         return
 
-    def _load(path, module, name):
+    def _clean_state_dict(sd: dict):
+        # 兼容 {'state_dict': {...}} / 分布式前缀 'module.'
+        if isinstance(sd, dict) and "state_dict" in sd and isinstance(sd["state_dict"], dict):
+            sd = sd["state_dict"]
+        if any(k.startswith("module.") for k in sd.keys()):
+            sd = {k.replace("module.", "", 1): v for k, v in sd.items()}
+        return sd
+
+    def _load(path, module, name, allow_partial=True):
+        if module is None:
+            logger.warning(f"[Load] 跳过 {name}（模块为空）")
+            return
         if not path:
             logger.warning(f"[Load] 跳过 {name}（路径为空）")
             return
@@ -150,15 +187,35 @@ def load_split_weights_if_any(cfg, rgb, text, proj, device):
             return
         try:
             sd = torch.load(path, map_location=device)
-            module.load_state_dict(sd, strict=True)
-            logger.info(f"[Load] {name} <- {path}")
+            sd = _clean_state_dict(sd)
+            try:
+                module.load_state_dict(sd, strict=True)
+                logger.info(f"[Load] {name} <- {path} (strict)")
+            except Exception as e:
+                if not allow_partial:
+                    raise
+                # 部分加载：只加载匹配且同形状的键
+                cur = module.state_dict()
+                matched = {k: v for k, v in sd.items() if k in cur and cur[k].shape == v.shape}
+                missing = [k for k in cur.keys() if k not in matched]
+                unexpected = [k for k in sd.keys() if k not in cur]
+                cur.update(matched)
+                module.load_state_dict(cur, strict=False)
+                logger.info(f"[Load] {name} <- {path} (partial) matched={len(matched)} "
+                            f"missing={len(missing)} unexpected={len(unexpected)}")
         except Exception as e:
             logger.error(f"[Load] 加载 {name} 失败: {e}")
 
-    _load(cfg_get(cfg, "Finetune.weights.rgb_path"),       rgb,             "rgb_encoder")
-    _load(cfg_get(cfg, "Finetune.weights.text_path"),      text,            "text_encoder")
-    _load(cfg_get(cfg, "Finetune.weights.proj_rgb_path"),  proj.get("rgb"), "proj_rgb")
-    _load(cfg_get(cfg, "Finetune.weights.proj_text_path"), proj.get("text"),"proj_text")
+    # encoders
+    _load(cfg_get(cfg, "Finetune.weights.rgb_path"),  rgb,  "rgb_encoder")
+    _load(cfg_get(cfg, "Finetune.weights.text_path"), text, "text_encoder")
+
+    # projectors（ModuleDict 没有 .get()；用下标前先判断 key 是否存在）
+    proj_rgb  = proj["rgb"]  if isinstance(proj, nn.ModuleDict) and "rgb"  in proj.keys() else None
+    proj_text = proj["text"] if isinstance(proj, nn.ModuleDict) and "text" in proj.keys() else None
+    _load(cfg_get(cfg, "Finetune.weights.proj_rgb_path"),  proj_rgb,  "proj_rgb")
+    _load(cfg_get(cfg, "Finetune.weights.proj_text_path"), proj_text, "proj_text")
+
 
 
 def apply_freeze_from_cfg(cfg, rgb, text, proj):
@@ -695,9 +752,9 @@ def main():
     total_params = sum(p.numel() for p in rgb.parameters() if p.requires_grad)
     logger.info(f'RGB encoder trainable parameters: {total_params:,}')
     total_params = sum(p.numel() for p in text.parameters() if p.requires_grad)
-#    logger.info(f'Text encoder trainable parameters: {total_params:,}')
+    logger.info(f'Text encoder trainable parameters: {total_params:,}')
     total_params = sum(p.numel() for p in proj.parameters() if p.requires_grad)
-#    logger.info(f'Projector trainable parameters: {total_params:,}')
+    logger.info(f'Projector trainable parameters: {total_params:,}')
 
     # 选择任务
     task = str(cfg_get(cfg, "Finetune.task", "retrieval")).lower()
