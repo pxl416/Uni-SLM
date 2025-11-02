@@ -1,5 +1,6 @@
 # ---------- 顶层 ----------
 seed: 3407
+mode: "pretrain"
 active_datasets: [CSL_Daily]
 
 Saving:
@@ -8,20 +9,22 @@ Saving:
 # ---------- 数据集配置 ----------
 datasets:
   CSL_Daily:
-    root: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/
-    rgb_dir: sentence                         # 相对 root
-    split_file: sentence_label/split_1.txt    # 相对 root
+    root: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512
+    rgb_dir: sentence
+    sentence_label_dir: sentence_label
+    split_file: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/sentence_label/split_1_train.txt   # ← 相对 root
+
     max_text_len: 128
     use_rgb:  true
     use_pose: false
     use_text: true
     token_level: char
 
-    # ✅ 这个块是“CSL_Daily 专用”的 temporal / 增强
     temporal:
+      T: 32
       ratio: 0.5
       jitter: false
-      min_frames: 32         # mini 数据若太短先设 1 验证路径，再调回 4/8
+      min_frames: 32
       max_frames: 32
       augment:
         size: 224
@@ -42,54 +45,11 @@ datasets:
         mean: [0.485, 0.456, 0.406]
         std:  [0.229, 0.224, 0.225]
 
-  CSL_News:
-    rgb_dir:  data/mini_CSL_News/rgb
-    pose_dir: data/mini_CSL_News/pose
-    train_labels: data/mini_CSL_News/train_label.json
-    val_labels:   data/mini_CSL_News/val_label.json
-    test_labels:  data/mini_CSL_News/test_label.json
-    use_rgb:  true
-    use_pose: true
-    use_text: true
-    token_level: char
 
-    # ✅ News 专用 temporal（示例）
-    temporal:
-      T: 32
-      jitter: true
-      random_offset: true
-      augment_train:
-        enable: true
-        size: 224
-        channel: rgb
-        gray_as_rgb: false
-        degrees: 5.0
-        translate: 0.05
-        scale: [0.9, 1.1]
-        shear: 2.0
-        enable_flip: false
-        hue: 0.015
-        saturation: 0.40
-        brightness: 0.40
-        contrast: 0.20
-        cutout_p: 0.10
-        cutout_max_area: 0.04
-        cutout_num: [1, 2]
-        mean: [0.485, 0.456, 0.406]
-        std:  [0.229, 0.224, 0.225]
-      augment_val:
-        enable: false
-        size: 224
-        channel: rgb
-        gray_as_rgb: false
-        mean: [0.485, 0.456, 0.406]
-        std:  [0.229, 0.224, 0.225]
-
-# ---------- 其余（保持不变即可，注意避免重复键） ----------
-mode: "pretrain"
-
+# ---------- 编码器/训练设置 ----------
 Encoders:
-  pose: { name: "PoseEncoder", output_dim: 512 }
+  # 如脚本会按 use_* 决定是否实例化，可以保留；否则删掉 pose 以免白建模
+  # pose: { name: "PoseEncoder", output_dim: 512 }
   rgb:  { name: "RGBEncoder",  output_dim: 512 }
   text: { name: "TextEncoder", model_path: "sentence-transformers/all-MiniLM-L6-v2", output_dim: 384 }
 
@@ -98,11 +58,8 @@ Pretraining:
   loss: "infoNCE"
   temperature: 0.07
   projection_dim: 256
-
-Evaluation:
-  retrieval:   { enabled: true, head: "RetrievalHead", rgb_in: 512, text_in: 384, proj_dim: 256, temperature: 0.07 }
-  recognition: { enabled: true, head: "RecognitionHeadCTC", in_dim: 512, num_classes: 2000, hidden_dim: 512, num_layers: 2, dropout: 0.1, blank_id: 0 }
-  translation: { enabled: true, head: "TranslationHeadMT5", in_dim: 512, vocab_size: 30000, mt5_path: google/mt5-base, hidden_dim: 768, label_smoothing: 0.1, lang: Chinese, max_length: 128 }
+  amp: true           # 混合精度
+  resume: "resume/pretrain_daily_1022"          # 预留断点恢复路径（留空也行）
 
 Fusion:
   pose_rgb:  { enabled: false }
@@ -110,18 +67,21 @@ Fusion:
   rgb_text:  { enabled: false }
 
 Training:
-  epochs: 3
+  epochs: 30
   batch_size: 8
+  num_workers: 10  # 4
   learning_rate: 1e-4
   grad_clip: 1.0
+  log_every: 50       # 可选
+  save_every: 1       # 可选（按 epoch）
 
 optimizer:
   type: "adam"
   scheduler: "cosine"
 
 wandb:
-  use: True
-  run_name: pretrain_daily_1020_st
+  use: true
+  run_name: pretrain_daily_1022_i3d_epoch30
   project: Uni-slm
 
-save_dir: checkpoints/pretrain_daily_1020_st
+save_dir: checkpoints/pretrain_daily_1022_i3d_epoch30
