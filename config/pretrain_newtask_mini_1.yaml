@@ -1,0 +1,95 @@
+# ---------- 顶层 ----------
+seed: 3407
+mode: "pretrain"
+active_datasets: [CSL_Daily]
+AMP:
+  enabled: true
+  dtype: bf16   # 可选: bf16 / fp16；留空则自动选择
+
+Saving:
+  split_modalities: true
+
+# ---------- 数据集配置 ----------
+datasets:
+  CSL_Daily:
+    root: data/mini_CSL_Daily
+    rgb_dir: sentence
+    split_file: data/mini_CSL_Daily/sentence_label/split_1.txt
+
+    max_text_len: 128
+    use_rgb:  true
+    use_pose: false          # 保留旧字段，不影响
+    use_text: true
+    token_level: char
+
+    # 我们现在要做的是：一个样本 = 捏合后的多句子视频
+    merge:
+      enabled: true              # 打开“多句拼接”模式
+      merge_ratio: 0.6           # 有 60% 的样本会去捏合多句；剩下 40% 仍然只是一句
+      max_segments: 3            # 最多拼到 3 句（“不可太多”）
+      transition_frames: 4       # 句子和句子之间留 4 帧过渡，不要一帧切掉
+      long_segment_threshold: 64 # 如果某一句本身 > 64 帧，就单独放，不拼
+
+    temporal:
+      T: 32
+      ratio: 0.5
+      jitter: false
+      min_frames: 32
+      max_frames: 32
+      augment:
+        size: 224
+        channel: rgb
+        degrees: 0
+        translate: 0.0
+        scale: [1.0, 1.0]
+        shear: 0.0
+        hue: 0.0
+        saturation: 0.0
+        brightness: 0.0
+        contrast: 0.0
+      augment_val:
+        enable: false
+        size: 224
+        channel: rgb
+        gray_as_rgb: false
+        mean: [0.485, 0.456, 0.406]
+        std:  [0.229, 0.224, 0.225]
+
+
+# ---------- 编码器/训练设置 ----------
+Encoders:
+  rgb:  { name: "RGBEncoder",  output_dim: 512 }
+  text: { name: "TextEncoder", model_path: "sentence-transformers/all-MiniLM-L6-v2", output_dim: 384 }
+
+Pretraining:
+  task: "contrastive"
+  loss: "infoNCE"
+  temperature: 0.07
+  projection_dim: 256
+  amp: true
+  resume: "resume/pretrain_daily_1022"
+
+Fusion:
+  pose_rgb:  { enabled: false }
+  pose_text: { enabled: false }
+  rgb_text:  { enabled: false }
+
+Training:
+  epochs: 100
+  batch_size: 16
+  num_workers: 0
+  learning_rate: 1e-4
+  grad_clip: 1.0
+  log_every: 50
+  save_every: 1
+
+optimizer:
+  type: "adam"
+  scheduler: "cosine"
+
+wandb:
+  use: true
+  run_name: pretrain_minidaily_newtask_1102
+  project: Uni-slm-newtask
+
+save_dir: ../checkpoints1/pretrain_minidaily_newtask_1102
