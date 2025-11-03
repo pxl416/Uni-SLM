@@ -2,9 +2,10 @@
 seed: 3407
 mode: "pretrain"
 active_datasets: [CSL_Daily]
+
 AMP:
   enabled: true
-  dtype: bf16   # 可选: bf16 / fp16；留空则自动选择
+  dtype: bf16
 
 Saving:
   split_modalities: true
@@ -16,23 +17,24 @@ datasets:
     rgb_dir: sentence
     split_file: data/mini_CSL_Daily/sentence_label/split_1.txt
 
+    # ！！！新增：分段标签目录（供时间目标 & 捏合使用）
+    segments:
+      label_dir: sentence_label
+
+    # 如果要做空间监督，建议声明关键点目录（像素坐标）
+    use_keypoints: true            # 若没有关键点，可先 false；空间损失会被自动跳过
+    keypoints_dir: keypoints       # 相对 root 的路径，如 data/mini_CSL_Daily/keypoints/<vid>/<frame>.npy
+    joints: 21
+    keypoint_dims: 2               # 2:(x,y) 或 3:(x,y,conf)
+
     max_text_len: 128
     use_rgb:  true
-    use_pose: false          # 保留旧字段，不影响
+    use_pose: false
     use_text: true
     token_level: char
 
-    # 我们现在要做的是：一个样本 = 捏合后的多句子视频
-    merge:
-      enabled: true              # 打开“多句拼接”模式
-      merge_ratio: 0.6           # 有 60% 的样本会去捏合多句；剩下 40% 仍然只是一句
-      max_segments: 3            # 最多拼到 3 句（“不可太多”）
-      transition_frames: 4       # 句子和句子之间留 4 帧过渡，不要一帧切掉
-      long_segment_threshold: 64 # 如果某一句本身 > 64 帧，就单独放，不拼
-
     temporal:
       T: 32
-      ratio: 0.5
       jitter: false
       min_frames: 32
       max_frames: 32
@@ -55,19 +57,42 @@ datasets:
         mean: [0.485, 0.456, 0.406]
         std:  [0.229, 0.224, 0.225]
 
+    # ！！！关键：捏合/拼接参数应该放在数据集下（由 Dataset 生效）
+    merge:
+      enabled: true
+      merge_ratio: 0.6
+      max_segments: 3
+      transition_frames: 4
+      long_segment_threshold: 64
 
 # ---------- 编码器/训练设置 ----------
 Encoders:
   rgb:  { name: "RGBEncoder",  output_dim: 512 }
   text: { name: "TextEncoder", model_path: "sentence-transformers/all-MiniLM-L6-v2", output_dim: 384 }
 
+# ！！！统一的预训练任务开关（与 pretrain-newtask1.py 对齐）
 Pretraining:
-  task: "contrastive"
-  loss: "infoNCE"
+  task: "multitask"                 # 支持 "contrastive" 或 "multitask"
+  tasks: ["semantics", "time", "space"]   # 任意子集：["semantics"], ["time"], ["space"], 或组合
+  weights:
+    semantics: 1.0
+    time: 1.0
+    space: 1.0
+  # 对比学习超参（Trainer 里按这个路径读取）
   temperature: 0.07
   projection_dim: 256
-  amp: true
-  resume: "resume/pretrain_daily_1022"
+  # 空间头网格大小
+  space_grid: 14
+
+  # 可选：兼容旧字段（不必删，代码也会忽略）
+  task_contrastive:
+    enabled: true
+  task_time:
+    enabled: true
+  task_space:
+    enabled: true
+
+  resume: ""   # 留空或填 ckpt 路径
 
 Fusion:
   pose_rgb:  { enabled: false }
