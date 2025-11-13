@@ -70,7 +70,7 @@ Model:
     enable: true
     output_dim: 512
     freeze: false
-    pretrained: "checkpoints/rgb_encoder.pth"
+    pretrained: "../pretrained-model/latest/rgb_encoder.pt" # /home/pxl416/PeixiLiu/px_proj/Uni-SLM/pretrained-model/latest/rgb_encoder.pt
 
   PoseEncoder:
     enable: false
@@ -80,7 +80,7 @@ Model:
 
   TextEncoder:
     enable: true
-    model_path: "sentence-transformers/all-MiniLM-L6-v2"
+    model_path: "pretrained-model/latest/text_encoder.pt"
     output_dim: 384
     freeze: true
     pretrained: ""
