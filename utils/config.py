@@ -190,6 +190,21 @@ def _validate_config(cfg: SimpleNamespace) -> None:
             raise ValueError(f"Dataset `{name}` not found under `datasets`.")
         _validate_per_dataset(name, ds_cfg)
 
+def cfg_get(cfg: SimpleNamespace, dotted_key: str, default=None):
+    """支持点号分层访问 cfg 的通用方法（容错，不抛异常）"""
+    keys = dotted_key.split(".")
+    curr = cfg
+    for k in keys:
+        if isinstance(curr, dict):
+            curr = curr.get(k, default)
+        elif isinstance(curr, SimpleNamespace):
+            curr = getattr(curr, k, default)
+        else:
+            return default
+    return curr
+
+
+
 # =============== 便利函数 ===============
 
 def iter_active_datasets(cfg: SimpleNamespace) -> Iterable[Tuple[str, SimpleNamespace]]:

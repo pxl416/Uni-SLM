@@ -1,5 +1,4 @@
 # ---------- 顶层 ----------
-seed: 3407
 mode: "pretrain"
 active_datasets: [CSL_Daily]
 
@@ -66,11 +65,32 @@ datasets:
       long_segment_threshold: 64
 
 # ---------- 编码器/训练设置 ----------
-Encoders:
-  rgb:  { name: "RGBEncoder",  output_dim: 512 }
-  text: { name: "TextEncoder", model_path: "sentence-transformers/all-MiniLM-L6-v2", output_dim: 384 }
+Model:
+  RGBEncoder:
+    enable: true
+    output_dim: 512
+    freeze: false
+    pretrained: "checkpoints/rgb_encoder.pth"
 
-# ！！！统一的预训练任务开关（与 pretrain-newtask1.py 对齐）
+  PoseEncoder:
+    enable: false
+    output_dim: 256
+    freeze: false
+    pretrained: ""
+
+  TextEncoder:
+    enable: true
+    model_path: "sentence-transformers/all-MiniLM-L6-v2"
+    output_dim: 384
+    freeze: true
+    pretrained: ""
+
+  Fusion:
+    pose_rgb:  { enabled: false }
+    pose_text: { enabled: false }
+    rgb_text:  { enabled: false }
+
+# ---------- 预训练方法 ----------
 Pretraining:
   task: "multitask"                 # 支持 "contrastive" 或 "multitask"
   tasks: ["semantics", "time", "space"]   # 任意子集：["semantics"], ["time"], ["space"], 或组合
@@ -94,14 +114,8 @@ Pretraining:
 
   resume: ""   # 留空或填 ckpt 路径
 
-Fusion:
-  pose_rgb:  { enabled: false }
-  pose_text: { enabled: false }
-  rgb_text:  { enabled: false }
-
+# ---------- 训练超参数 ----------
 Training:
-  epochs: 100
-  batch_size: 16
   num_workers: 0
   learning_rate: 1e-4
   grad_clip: 1.0
@@ -109,9 +123,13 @@ Training:
   save_every: 1
 
 optimizer:
-  type: "adam"
-  scheduler: "cosine"
+  name: adamw
+  weight_decay: 0.01
+  momentum: 0.9        # 仅 SGD 用
 
+
+
+# ---------- 日志和保存 ----------
 wandb:
   use: true
   run_name: pretrain_minidaily_newtask_1102
