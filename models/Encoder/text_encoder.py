@@ -6,7 +6,7 @@ from transformers import AutoModel, AutoTokenizer
 def mean_pooling(token_embeddings: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     # token_embeddings: [B, L, D], attention_mask: [B, L]
     input_mask_expanded = attention_mask.unsqueeze(-1).type_as(token_embeddings)  # [B, L, 1]
-    sum_embeddings = (token_embeddings * input_mask_expanded).sum(dim=1)         # [B, D]
+    sum_embeddings = (token_embeddings * input_mask_expanded).sum(dim=1)          # [B, D]
     sum_mask = input_mask_expanded.sum(dim=1).clamp(min=1e-9)                     # [B, 1]
     return sum_embeddings / sum_mask                                              # [B, D]
 
