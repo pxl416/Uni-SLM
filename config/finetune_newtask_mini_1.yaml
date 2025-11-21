@@ -12,11 +12,11 @@ datasets:
     sentence_dir: sentence
     sentence_label_dir: sentence_label
 
-    # 为每个 phase 指定独立的分割列表文件（每行一个样本 id 或相对路径）
     split_files:
-      train: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/sentence_label/split_1_train.txt
-      dev:   /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/sentence_label/split_1_dev.txt
-      test:  /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/sentence_label/split_1_test.txt
+      train: sentence_label/split_1_train.txt
+      dev: sentence_label/split_1_dev.txt
+      test: sentence_label/split_1_test.txt
+
 
     # 时序采样/长度（你的 finetune.py 会读取 temporal.T 或 temporal.max_frames）
     temporal:
@@ -36,7 +36,7 @@ Pretraining:
 Training:
   batch_size: 8
   num_workers: 4
-  epochs: 5
+  epochs: 3
   learning_rate_head: 3e-4
   learning_rate_backbone: 5e-5
   grad_clip: 1.0
@@ -106,4 +106,4 @@ Evaluation:
 wandb:
   use: true
   project: uni-slm-finetune
-  run_name: csl-daily-retrieval-split1-1026
+  run_name: csl-daily-split1-1121

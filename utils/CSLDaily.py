@@ -72,8 +72,36 @@ class CSLDailyDataset(BaseDataset):
         self.root = os.path.abspath(root)
 
         rgb_dir_conf = _get(ds_cfg, "rgb_dir", "sentence")
-        split_file_conf = _get(ds_cfg, "split_file", None)
         self.rgb_dir = _abs_path(self.root, rgb_dir_conf)
+
+        # === 1) 读取 split_files（兼容 dict 和 SimpleNamespace） ===
+        split_files_conf = _get(ds_cfg, "split_files", None)
+
+        # 把 SimpleNamespace 转为 dict
+        def _ns_to_dict(x):
+            if isinstance(x, dict):
+                return x
+            elif hasattr(x, "__dict__"):
+                return {k: getattr(x, k) for k in x.__dict__.keys()}
+            return {}
+
+        split_files_conf = _ns_to_dict(split_files_conf)
+
+        # === 2) 映射 phase -> 文件名 key ===
+        phase_norm = phase.lower()
+        if phase_norm in ("train", "tr", "training"):
+            key = "train"
+        elif phase_norm in ("val", "dev", "valid", "validation"):
+            key = "dev"
+        elif phase_norm in ("test", "te"):
+            key = "test"
+        else:
+            key = phase_norm
+
+        # === 3) 获取 path ===
+        split_file_conf = split_files_conf.get(key, None)
+
+        # === 4) 设置 self.split_file ===
         self.split_file = _abs_path(self.root, split_file_conf) if split_file_conf else None
 
         # 文本/temporal/增强参数 —— 这些会在 build_*_transform 用到，所以现在就放到 self 上
