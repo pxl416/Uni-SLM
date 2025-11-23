@@ -1,26 +1,55 @@
-# ========= Basic =========
-seed: 3407
-save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetune
-
 # ========= Datasets selection =========
 active_datasets: ["CSL_Daily"]
 
 datasets:
   CSL_Daily:
-    # 数据根目录（包含 sentence/ 和 sentence_label/）
-    root: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512
-    sentence_dir: sentence
-    sentence_label_dir: sentence_label
+    modalities:
+      rgb: true
+      pose: false
+      text: true
 
-    split_files:
+    paths:
+      root: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily/
+      rgb: sentence
+      pose: lmdb
+      text: sentence_label/video_map.txt
+      segments: sentence_label/video_map.txt
+
+    splits:
       train: sentence_label/split_1_train.txt
-      dev: sentence_label/split_1_dev.txt
-      test: sentence_label/split_1_test.txt
+      val:   sentence_label/split_1_dev.txt
+      test:  sentence_label/split_1_test.txt
 
-
-    # 时序采样/长度（你的 finetune.py 会读取 temporal.T 或 temporal.max_frames）
     temporal:
-      T: 32   # or max_frames: 32
+      T: 32
+      jitter: false
+      min_frames: 1
+      max_frames: 128   # 每个视频最大长度
+
+  CSL_News:
+    modalities:
+      rgb: true
+      pose: true
+      text: true
+
+    paths:
+      root: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_News
+      rgb: rgb
+      pose: pose
+      text: ./
+      segments: null       # CSLNews 没有 segmentation 标签，设 null
+
+    splits:
+      train: train_label.json
+      val:   val_label.json
+      test:  test_label.json
+
+    temporal:
+      T: 32
+      jitter: false
+      min_frames: 1
+      max_frames: 256
+
 
 # ========= Encoders & Projection =========
 Encoders:
@@ -36,7 +65,7 @@ Pretraining:
 Training:
   batch_size: 8
   num_workers: 4
-  epochs: 3
+  epochs: 30
   learning_rate_head: 3e-4
   learning_rate_backbone: 5e-5
   grad_clip: 1.0
@@ -101,7 +130,9 @@ Evaluation:
     encode_mode: encoder_outputs         # 或者 inputs_embeds
 
 
-
+# ========= Basic =========
+seed: 3407
+save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetune
 # ========= W&B (可选) =========
 wandb:
   use: true

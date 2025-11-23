@@ -15,8 +15,6 @@ datasets:
     root: data/mini_CSL_Daily
     rgb_dir: sentence
     split_file: data/mini_CSL_Daily/sentence_label/split_1.txt
-
-    # ！！！新增：分段标签目录（供时间目标 & 捏合使用）
     segments:
       label_dir: sentence_label
 

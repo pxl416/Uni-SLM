@@ -1,11 +1,9 @@
 # finetune.py
 import os
-import time
 import json
 import logging
 import argparse
 from argparse import Namespace
-from contextlib import nullcontext
 from types import SimpleNamespace
 
 import torch
@@ -19,7 +17,7 @@ import yaml  # NEW: for YAML loading
 
 # NOTE: 不再强依赖 utils.config.load_train_config，直接本地加载 YAML
 # from utils.config import load_train_config
-from utils.dataset import create_dataloader
+from datasets.datasets import create_dataloader
 from models.Encoder.rgb_encoder import RGBEncoder
 from models.Encoder.text_encoder import TextEncoder
 from models.Head.retrieval import RetrievalHead

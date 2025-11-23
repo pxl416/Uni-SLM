@@ -1,4 +1,4 @@
-# utils/dataset.py
+# utils/datasets.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -191,10 +191,10 @@ def create_dataloader(args, cfg, phase: str = 'train') -> DataLoader:
 
     # 延迟导入，避免在顶层硬依赖具体数据集；新增数据集只需在这里扩一行
     if args.dataset_name == 'CSL_News':
-        from .CSLNews import CSLNewsDataset
+        from datasets.CSLNews import CSLNewsDataset
         dataset_cls = CSLNewsDataset
     elif args.dataset_name == 'CSL_Daily':
-        from .CSLDaily import CSLDailyDataset
+        from datasets.CSLDaily import CSLDailyDataset
         dataset_cls = CSLDailyDataset
     else:
         raise NotImplementedError(f"不支持的数据集: {args.dataset_name}")

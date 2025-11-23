@@ -6,7 +6,6 @@ from argparse import Namespace
 from contextlib import nullcontext
 
 import numpy as np
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -20,7 +19,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.nn.utils import clip_grad_norm_
 
 from utils.config import load_train_config
-from utils.dataset import create_dataloader
+from datasets.datasets import create_dataloader
 from utils.loss import build_loss
 from models.Encoder.rgb_encoder import RGBEncoder
 from models.Encoder.text_encoder import TextEncoder

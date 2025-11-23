@@ -4,7 +4,6 @@ import os
 import time
 import logging
 from argparse import Namespace
-from contextlib import nullcontext
 import argparse
 
 # ========= 第三方库 =========
@@ -20,7 +19,7 @@ import wandb
 # ========= 项目内部模块 =========
 from utils.amp_compat import make_autocast, make_scaler
 from utils.config import load_train_config, cfg_get
-from utils.dataset import create_dataloader
+from datasets.datasets import create_dataloader
 from utils.loss import build_loss
 from utils.optimizer import build_optimizer
 from models.Encoder.rgb_encoder import RGBEncoder

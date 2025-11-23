@@ -1,5 +1,5 @@
-from .CSLDaily import CSLDailyDataset
-from .CSLNews  import CSLNewsDataset
+from datasets.CSLDaily import CSLDailyDataset
+from datasets.CSLNews import CSLNewsDataset
 
 DATASET_REGISTRY = {
     "CSL_Daily": CSLDailyDataset,
