@@ -7,225 +7,264 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, get_worker_info
 from torch.nn.utils.rnn import pad_sequence
-from torchvision import transforms
+from collections import defaultdict
+
+# 注册表 —— 以后加入 BOBSL, Phoenix 只需加一行
+DATASET_REGISTRY = {
+    "CSL_Daily":  "datasets.CSLDaily:CSLDailyDataset",
+    "CSL_News":   "datasets.CSLNews:CSLNewsDataset",
+    # "BOBSL":   "datasets.BOBSL:BOBSLDataset",
+    # "Phoenix": "datasets.Phoenix:PhoenixDataset",
+}
 
 
-# ======================
-# 1) 统一基类（所有数据集继承它）
-# ======================
+# ============================================================================
+# 1) BaseDataset：保持和你原来一致（只做微调）
+# ============================================================================
 class BaseDataset(Dataset):
     """
     统一数据集基类：
-      - 提供可复现的采样 RNG（按 worker 粒度）
-      - 提供通用的 collate_fn（对齐 pose/RGB 时间维，输出统一 schema）
-      - 预留 train/val transform 的构建钩子（子类可覆盖）
-    子类需在 __init__ 中自行解析 cfg["datasets"][<NAME>] 并规范化路径。
+      - 可复现 RNG（worker 粒度）
+      - train/val transform 钩子
+      - 通用 collate_fn（统一 RGB/pose/text 输出）
     """
     def __init__(self, args, cfg, phase: str):
         super().__init__()
         self.args = args
         self.cfg = cfg
-        self.phase = str(phase).lower()
+        self.phase = phase.lower()
 
-        # —— 常用超参 —— #
-        self.max_length  = int(getattr(args, "max_length", 128))
+        self.max_length = int(getattr(args, "max_length", 128))
         self.rgb_support = bool(getattr(args, "rgb_support", True))
-        self.seed        = int(getattr(args, "seed", getattr(cfg, "seed", 3407)))
-        self.enable_aug  = (self.phase == "train") and bool(getattr(args, "use_aug", False))
+        self.seed = int(getattr(args, "seed", cfg.get("seed", 3407)))
 
-        # —— 默认 transform（子类可覆写 build_*_transform 来替换）—— #
-        base_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406],
-                                 [0.229, 0.224, 0.225]),
-        ])
-        self.data_transform = self.build_train_transform() if self.phase == "train" else self.build_val_transform()
-        # 若子类未覆盖，使用基础 transform
-        if self.data_transform is None:
-            self.data_transform = base_transform
+        # transform 由子类覆盖
+        self.data_transform = None
+        if self.phase == "train":
+            self.data_transform = self.build_train_transform()
+        else:
+            self.data_transform = self.build_val_transform()
 
-    # ---- 可选：由子类覆盖，构建 train/val transform ---- #
+    # 由子类覆盖
     def build_train_transform(self):
-        return None  # 子类可返回包含数据增强的 Compose
+        return None
 
     def build_val_transform(self):
-        return None  # 子类可返回仅 resize+normalize 的 Compose
+        return None
 
-    # ---- 可复现 RNG（按 worker 粒度） ---- #
+    # worker-level RNG
     def _make_rng(self):
         wi = get_worker_info()
-        base = int(getattr(self, "seed", 3407))
-        wid  = wi.id if wi is not None else 0
-        return np.random.default_rng(base + wid)
+        wid = wi.id if wi is not None else 0
+        return np.random.default_rng(self.seed + wid)
 
-    # ---- 采样时间索引（子类可覆盖为分段均匀采样等策略） ---- #
-    def _sample_indices(self, duration: int) -> np.ndarray:
-        """
-        返回升序索引，长度最多为 self.max_length。
-        子类如需“分段均匀采样+抖动”，可覆写本方法。
-        """
-        rng = self._make_rng()
-        L = int(self.max_length)
-        if duration <= 0:
-            return np.arange(1, dtype=np.int64)
+    # 默认采样（子类可覆盖）
+    def _sample_indices(self, duration: int):
+        L = self.max_length
         if duration <= L:
             return np.arange(duration, dtype=np.int64)
+        rng = self._make_rng()
         idx = rng.choice(duration, size=L, replace=False)
         idx.sort()
-        return idx.astype(np.int64)
+        return idx
 
-    # ---- 打包 batch（统一输出 schema） ---- #
+    # --------------------------------------------------------------
+    # collate_fn：**必须统一输出格式（RGB, pose, mask, text）**
+    # --------------------------------------------------------------
     def collate_fn(self, batch):
         """
-        期望单条样本为：
-          (name: str,
-           pose_sample: dict{ 'body': [T,9,3], 'left': [T,21,3], 'right':[T,21,3], 'face_all':[T,18,3] }(Tensor),
-           text: str,
-           time_idx: np.ndarray或list[int]（可选，随子类决定是否提供）,
-           support: dict{ 'rgb_img': [T,3,224,224](Tensor)|None, 'rgb_img_indices': list[int]|ndarray|Tensor }
-        输出：
-          src_input, tgt_input 两个 dict，字段详见下文。
+        期望 dataset 返回：
+        (name, pose_sample{keypoints}, text, support{rgb_img, attn_mask, segments})
         """
-        # 解包
-        name_batch, pose_list, text_batch, support_list = [], [], [], []
+        name_batch = []
+        pose_list = []
+        text_batch = []
+        support_list = []
+
         for item in batch:
-            # 允许 time_idx 缺省（第四位可忽略）
-            if len(item) == 5:
-                name, pose_sample, text, _, support = item
-            else:
-                name, pose_sample, text, support = item
+            name, pose_sample, text, support = item
             name_batch.append(name)
             pose_list.append(pose_sample)
             text_batch.append(text)
             support_list.append(support)
 
-        # ---------- 1) 对齐 pose ---------- #
+        B = len(batch)
         src_input = {}
-        pose_parts = ['body', 'left', 'right', 'face_all']  # 固定顺序
 
-        if not pose_list or not pose_list[0]:
-            # 空兜底
-            B, Tm = len(batch), self.max_length
-            src_input['body']   = torch.zeros((B, Tm,  9, 3))
-            src_input['left']   = torch.zeros((B, Tm, 21, 3))
-            src_input['right']  = torch.zeros((B, Tm, 21, 3))
-            src_input['face_all'] = torch.zeros((B, Tm, 18, 3))
-            src_input['attention_mask']   = torch.zeros((B, Tm), dtype=torch.long)
-            src_input['src_length_batch'] = torch.zeros(B, dtype=torch.long)
-        else:
-            # 以 body 的长度为基准
-            lengths = torch.LongTensor([pose_list[i][pose_parts[0]].shape[0] for i in range(len(pose_list))])
-            T_max = int(lengths.max().item())
+        # ========= pose (keypoints) =========
+        has_pose = any(p and "keypoints" in p for p in pose_list)
+        if has_pose:
+            lengths = []
+            padded = []
+            for p in pose_list:
+                if p and "keypoints" in p:
+                    x = p["keypoints"]
+                    lengths.append(x.shape[0])
+                else:
+                    x = torch.zeros((1, 21, 3))
+                    lengths.append(1)
 
-            for part in pose_parts:
-                padded = []
-                for i in range(len(pose_list)):
-                    x = pose_list[i][part]  # [T, K, 3]
-                    T = x.shape[0]
-                    if T < T_max:
-                        pad = x[-1:].expand(T_max - T, x.shape[1], x.shape[2])
-                        x = torch.cat([x, pad], dim=0)
-                    padded.append(x)
-                src_input[part] = torch.stack(padded, dim=0)  # [B, T_max, K, 3]
+                padded.append(x)
 
-            # attention_mask：1=有效，0=pad
-            attn_mask = pad_sequence(
+            max_len = max(lengths)
+            pad_out = []
+
+            for x, L in zip(padded, lengths):
+                if L < max_len:
+                    pad = x[-1:].expand(max_len - L, *x.shape[1:])
+                    x = torch.cat([x, pad], 0)
+                pad_out.append(x)
+
+            src_input["keypoints"] = torch.stack(pad_out, 0)
+            src_input["kp_lengths"] = torch.tensor(lengths)
+
+            src_input["attention_mask"] = pad_sequence(
                 [torch.ones(L, dtype=torch.long) for L in lengths],
                 batch_first=True, padding_value=0
             )
-            src_input['attention_mask']   = attn_mask
-            src_input['src_length_batch'] = lengths
+        else:
+            src_input["keypoints"] = torch.zeros((B, 1, 21, 3))
+            src_input["kp_lengths"] = torch.ones(B, dtype=torch.long)
+            src_input["attention_mask"] = torch.ones((B, 1), dtype=torch.long)
 
-        src_input['name_batch'] = name_batch
-
-        # ---------- 2) 对齐 RGB ---------- #
+        # ========= RGB =========
         if self.rgb_support:
-            rgb_list = [s.get('rgb_img', None) for s in support_list]
-            for i, x in enumerate(rgb_list):
-                if x is None:
-                    rgb_list[i] = torch.zeros(1, 3, 224, 224)
+            rgb_clips = []
+            rgb_lengths = []
 
-            T_rgb_list = [x.shape[0] for x in rgb_list]
-            T_rgb_max  = max(T_rgb_list) if T_rgb_list else 1
+            for s in support_list:
+                clip = s["rgb_img"]
+                rgb_clips.append(clip)
+                rgb_lengths.append(clip.shape[0])
 
+            max_rgb = max(rgb_lengths)
             rgb_padded = []
-            for x in rgb_list:
-                T, C, H, W = x.shape
-                if T < T_rgb_max:
-                    pad = x[-1:].expand(T_rgb_max - T, C, H, W)
-                    x = torch.cat([x, pad], dim=0)
-                rgb_padded.append(x)
 
-            src_input['rgb_img'] = torch.stack(rgb_padded, dim=0)  # [B, T_rgb_max, 3, 224, 224]
+            for clip, L in zip(rgb_clips, rgb_lengths):
+                if L < max_rgb:
+                    pad = clip[-1:].expand(max_rgb - L, *clip.shape[1:])
+                    clip = torch.cat([clip, pad], 0)
+                rgb_padded.append(clip)
 
-            # 统一成张量（pad 到同长）
-            idx_seqs = [torch.as_tensor(s.get('rgb_img_indices', []), dtype=torch.long) for s in support_list]
-            if len(idx_seqs) > 0 and idx_seqs[0].numel() > 0:
-                src_input['rgb_img_indices'] = pad_sequence(idx_seqs, batch_first=True, padding_value=0)
-            else:
-                src_input['rgb_img_indices'] = torch.zeros((len(support_list), 1), dtype=torch.long)
+            src_input["rgb_img"] = torch.stack(rgb_padded, 0)
+            src_input["rgb_len"] = torch.tensor(rgb_lengths)
+            src_input["rgb_attn_mask"] = pad_sequence(
+                [torch.ones(L, dtype=torch.bool) for L in rgb_lengths],
+                batch_first=True, padding_value=0
+            )
 
-            src_input['rgb_img_len'] = torch.as_tensor(T_rgb_list, dtype=torch.long)
-            src_input['has_rgb']     = torch.as_tensor([s.get('rgb_img', None) is not None for s in support_list],
-                                                       dtype=torch.bool)
-
-        # ---------- 3) 目标 ---------- #
-        tgt_input = {
-            'gt_sentence': text_batch,  # list[str]
+        # ========= segments =========
+        src_input["segments"] = {
+            "starts": [s["segments"]["starts"] for s in support_list],
+            "ends":   [s["segments"]["ends"] for s in support_list],
+            "texts":  [s["segments"]["texts"] for s in support_list],
         }
+
+        # ========= text =========
+        tgt_input = {
+            "gt_sentence": text_batch
+        }
+
+        src_input["name_batch"] = name_batch
 
         return src_input, tgt_input
 
 
-# ======================
-# 2) DataLoader 工厂
-# ======================
-def create_dataloader(args, cfg, phase: str = 'train') -> DataLoader:
+# ============================================================================
+# 2) MultiDataset wrapper —— 支持多个 dataset 混合训练
+# ============================================================================
+class MultiDataset(Dataset):
     """
-    统一创建 DataLoader：
-      - 通过延迟导入选择数据集类（避免循环依赖）
-      - 设置 worker 种子与生成器，保证可复现
-      - 只传入 args/cfg/phase，路径解析留给子类在 __init__ 中完成
+    多数据集混合：
+      datasets: List[(dataset_instance, weight)]
+      自动按权重采样
     """
-    phase = str(phase).lower()
+    def __init__(self, datasets, weights=None):
+        self.datasets = datasets
+        N = len(datasets)
+        if weights is None:
+            weights = [1.0] * N
+        self.weights = np.array(weights, dtype=np.float64)
+        self.weights /= self.weights.sum()
 
-    # 延迟导入，避免在顶层硬依赖具体数据集；新增数据集只需在这里扩一行
-    if args.dataset_name == 'CSL_News':
-        from datasets.CSLNews import CSLNewsDataset
-        dataset_cls = CSLNewsDataset
-    elif args.dataset_name == 'CSL_Daily':
-        from datasets.CSLDaily import CSLDailyDataset
-        dataset_cls = CSLDailyDataset
+        self.lengths = [len(ds) for ds in datasets]
+        self.cum = np.cumsum(self.weights)
+
+    def __len__(self):
+        # 让 dataloader 无限重复，所以这里返回最大长度
+        return max(self.lengths)
+
+    def _select_dataset(self):
+        r = random.random()
+        idx = int(np.searchsorted(self.cum, r))
+        return idx, self.datasets[idx]
+
+    def __getitem__(self, _):
+        ds_idx, ds = self._select_dataset()
+        ridx = random.randint(0, len(ds) - 1)
+        return ds[ridx]
+
+
+# ============================================================================
+# 3) 工厂函数 create_dataloader（支持 multi-dataset）
+# ============================================================================
+def create_dataloader(args, cfg, phase="train"):
+    phase = phase.lower()
+
+    # -----------------------------------------
+    # 解析 active_datasets
+    # 允许：
+    # active_datasets: ["CSL_Daily", "CSL_News"]
+    # active_weights:  [1.0, 0.5]
+    # -----------------------------------------
+    ds_names = cfg.get("active_datasets", ["CSL_Daily"])
+    ds_weights = cfg.get("active_weights", [1.0] * len(ds_names))
+
+    ds_list = []
+
+    for name in ds_names:
+        if name not in DATASET_REGISTRY:
+            raise KeyError(f"未注册的数据集：{name}")
+
+        module_name, class_name = DATASET_REGISTRY[name].split(":")
+        module = __import__(module_name, fromlist=[class_name])
+        ds_class = getattr(module, class_name)
+
+        inst = ds_class(args=args, cfg=cfg, phase=phase)
+        ds_list.append(inst)
+
+    # 若只有一个数据集 → 直接 dataloader
+    if len(ds_list) == 1:
+        dataset = ds_list[0]
     else:
-        raise NotImplementedError(f"不支持的数据集: {args.dataset_name}")
+        dataset = MultiDataset(ds_list, weights=ds_weights)
 
-    # 由各子类在 __init__ 里解析 cfg["datasets"][NAME] 并规范化路径
-    dataset = dataset_cls(args=args, cfg=cfg, phase=phase)
+    # -----------------------------------------
+    # DataLoader
+    # -----------------------------------------
+    train_cfg = cfg.get("Training", {})
+    batch_size = train_cfg.get("batch_size", 8)
+    num_workers = train_cfg.get("num_workers", 4)
 
-    # DataLoader 随机性与可复现
-    def _seed_worker(worker_id: int):
-        worker_seed = torch.initial_seed() % (2 ** 32)
-        random.seed(worker_seed)
-        np.random.seed(worker_seed)
-        torch.manual_seed(worker_seed)
+    # worker seed
+    def _seed_worker(worker_id):
+        seed = torch.initial_seed() % (2**32)
+        random.seed(seed)
+        np.random.seed(seed)
 
-    num_workers = int(getattr(args, 'num_workers', 4))
-    gen_seed = int(getattr(args, "seed", getattr(cfg, "seed", 3407)))
-    g = torch.Generator().manual_seed(gen_seed)
+    g = torch.Generator()
+    g.manual_seed(cfg.get("seed", 3407))
 
-    # 仅在多进程时添加 persistent_workers / prefetch_factor，避免 0 worker 报错
-    dl_kwargs = dict(
+    return DataLoader(
         dataset=dataset,
-        batch_size=int(getattr(args, 'batch_size', 4)),
-        shuffle=(phase == 'train'),
+        batch_size=batch_size,
+        shuffle=(phase == "train"),
         num_workers=num_workers,
         pin_memory=True,
-        collate_fn=dataset.collate_fn,
-        drop_last=(phase == 'train'),
+        drop_last=(phase == "train"),
+        collate_fn=ds_list[0].collate_fn,  # 用第一个 dataset 的 collate_fn 即可
         worker_init_fn=_seed_worker,
         generator=g,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
     )
-    if num_workers > 0:
-        dl_kwargs.update(persistent_workers=True, prefetch_factor=2)
-
-    return DataLoader(**dl_kwargs)

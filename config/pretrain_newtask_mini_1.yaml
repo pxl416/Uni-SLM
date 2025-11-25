@@ -1,6 +1,8 @@
 # ---------- 顶层 ----------
 mode: "pretrain"
-active_datasets: [CSL_Daily]
+active_datasets: ["CSL_Daily", "CSL_News"]
+active_weights: [1.0, 0.5]     # Daily 占 2/3，News 占 1/3
+
 
 AMP:
   enabled: true
