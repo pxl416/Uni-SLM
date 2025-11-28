@@ -17,6 +17,162 @@ except Exception:
     wandb = None  # type: ignore
     _WANDB_AVAILABLE = False
 
+# === 放到文件顶部 import 后任意位置追加 ===
+from PIL import ImageDraw
+
+# 常用 21 点手部骨架（按需改）
+DEFAULT_TOPOLOGY_21 = [
+    (0,1),(1,2),(2,3),(3,4),          # 拇指
+    (0,5),(5,6),(6,7),(7,8),          # 食指
+    (0,9),(9,10),(10,11),(11,12),     # 中指
+    (0,13),(13,14),(14,15),(15,16),   # 无名指
+    (0,17),(17,18),(18,19),(19,20),   # 小指
+]
+
+def draw_skeleton_on_pil(
+    img: Image.Image,
+    kpts: np.ndarray,                  # [J,C], C=2或3
+    topology: Optional[List[Tuple[int,int]]] = None,
+    kpt_coord_mode: str = "pixel",     # "pixel" 或 "normalized"
+    radius: int = 2,
+    line_width: int = 2,
+) -> Image.Image:
+    """
+    将关键点/骨架画到 PIL 图像上（返回新图像）。
+    - kpt_coord_mode="normalized" 表示 kpts 落在 [0,1]，会按图像尺寸放缩
+    """
+    if topology is None:
+        topology = DEFAULT_TOPOLOGY_21
+    img = img.copy()
+    W, H = img.size
+    draw = ImageDraw.Draw(img)
+
+    if kpts is None or kpts.size == 0:
+        return img
+    kpts = np.asarray(kpts, dtype=np.float32)
+
+    def _xy(j):
+        x, y = float(kpts[j, 0]), float(kpts[j, 1])
+        if kpt_coord_mode == "normalized":
+            x, y = x * W, y * H
+        return x, y
+
+    # 先画骨架线
+    for a, b in topology:
+        if a < kpts.shape[0] and b < kpts.shape[0]:
+            xa, ya = _xy(a); xb, yb = _xy(b)
+            draw.line((xa, ya, xb, yb), width=line_width, fill=(0, 255, 0))
+    # 再画关键点
+    for j in range(min(kpts.shape[0], 128)):
+        x, y = _xy(j)
+        draw.ellipse((x-radius, y-radius, x+radius, y+radius), outline=(255, 0, 0), width=line_width)
+    return img
+
+
+def save_keypoint_overlay_grid(
+    frames_pil: List[Image.Image],
+    kpts_seq: np.ndarray,             # [T,J,C]
+    picks: Optional[List[int]] = None,
+    kpt_coord_mode: str = "pixel",
+    topology: Optional[List[Tuple[int,int]]] = None,
+    max_cols: int = 8,
+    save_path: Optional[str] = None,
+    log_key: Optional[str] = None,
+):
+    """
+    把若干时刻的帧做成网格，叠加关键点/骨架后保存/记录。
+    """
+    T = len(frames_pil)
+    if picks is None:
+        # 默认选 4 帧：首、中、中、尾
+        if T >= 4:
+            picks = [0, T//3, 2*T//3, T-1]
+        else:
+            picks = list(range(T))
+
+    vis_frames: List[Image.Image] = []
+    for t in picks:
+        t = int(max(0, min(T-1, t)))
+        kp = kpts_seq[t] if kpts_seq is not None and len(kpts_seq) > t else None
+        vis = draw_skeleton_on_pil(frames_pil[t], kp, topology=topology, kpt_coord_mode=kpt_coord_mode)
+        vis_frames.append(vis)
+
+    show_clip_grid(
+        vis_frames,
+        title="keypoints-overlay",
+        max_cols=max_cols,
+        step=1,
+        save_path=save_path,
+        log_key=log_key or "debug/keypoints_overlay"
+    )
+
+
+def save_timeline(
+    starts: List[int],
+    ends: List[int],
+    T_total: int,
+    labels: Optional[List[str]] = None,
+    save_path: Optional[str] = None,
+    log_key: Optional[str] = None,
+):
+    """
+    画一条长度为 T_total 的时间轴，并标出若干 [start, end] 段，附文本标签。
+    """
+    _ensure_dir_for(save_path)
+    starts = list(map(int, starts))
+    ends   = list(map(int, ends))
+    K = len(starts)
+    xs = np.arange(T_total, dtype=np.int32)
+
+    plt.figure(figsize=(max(6, T_total/80), 1.6 + 0.2*K))
+    # 底条
+    plt.plot([0, T_total-1], [0, 0], linewidth=6)
+
+    # 填段
+    for i, (s, e) in enumerate(zip(starts, ends)):
+        s = max(0, min(T_total-1, s))
+        e = max(0, min(T_total-1, e))
+        if e < s: s, e = e, s
+        plt.fill_between([s, e], [-0.15, -0.15], [0.15, 0.15], alpha=0.4, step="pre", label=f"seg{i}")
+        plt.vlines([s, e], -0.3, 0.3, linewidth=1)
+
+        if labels and i < len(labels) and labels[i]:
+            txt = labels[i]
+            mid = (s + e) / 2.0
+            plt.text(mid, 0.35 + 0.18*(i%3), txt, ha="center", va="bottom", fontsize=8, rotation=0)
+
+    plt.yticks([])
+    plt.xlim(-1, T_total)
+    plt.xlabel("time (frame index)")
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=160)
+    _maybe_wandb_log({(log_key or "debug/timeline"): wandb.Image(plt.gcf()) if _WANDB_AVAILABLE else (save_path or "timeline")})
+    plt.close()
+
+
+def save_attn_mask(
+    attn_mask: np.ndarray,  # [T] bool/0-1
+    save_path: Optional[str] = None,
+    log_key: Optional[str] = None,
+):
+    """
+    显示时间维有效/填充的分布情况。
+    """
+    T = int(attn_mask.shape[0])
+    y = (attn_mask.astype(np.int32) * 1)
+    plt.figure(figsize=(max(6, T/80), 1.6))
+    plt.bar(np.arange(T), y, width=1.0)
+    plt.yticks([0,1], ["pad","valid"])
+    plt.ylim(0, 1.2)
+    plt.xlabel("time")
+    plt.tight_layout()
+    if save_path:
+        _ensure_dir_for(save_path)
+        plt.savefig(save_path, dpi=160)
+    _maybe_wandb_log({(log_key or "debug/attn_mask"): wandb.Image(plt.gcf()) if _WANDB_AVAILABLE else (save_path or "attn_mask")})
+    plt.close()
+
 
 # ------------------------- 小工具 -------------------------
 def _maybe_wandb_log(data: Dict[str, Any]):
@@ -256,9 +412,7 @@ def preview_augment(
     """
     # 生成增强结果
     out_t = aug_callable(frames_pil, seed=seed)  # [T,C,H,W]
-    frames_aug = tensor_clip_to_pil_list(
-        out_t if denorm is None else out_t, denorm=denorm
-    )
+    frames_aug = tensor_clip_to_pil_list(out_t, denorm=denorm)
 
     # 仅取部分帧展示
     ori = frames_pil[::max(1, step)]

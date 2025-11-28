@@ -1,30 +1,35 @@
 # pretrain.py
+# ========= 通用工具 =========
 import os
 import time
 import logging
 from argparse import Namespace
-from contextlib import nullcontext
+import argparse
 
+# ========= 第三方库 =========
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import clip_grad_norm_
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 import wandb
 
-import torch
-
+# ========= 项目内部模块 =========
 from utils.amp_compat import make_autocast, make_scaler
-
-from torch.optim import Adam
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.nn.utils import clip_grad_norm_
-
-from utils.config import load_train_config
-from utils.dataset import create_dataloader
+from utils.config import load_train_config, cfg_get
+from datasets.datasets import create_dataloader
 from utils.loss import build_loss
+from utils.optimizer import build_optimizer
 from models.Encoder.rgb_encoder import RGBEncoder
 from models.Encoder.text_encoder import TextEncoder
+# from utils.distributed import setup_distributed
+# from models.build_model import build_model
+
+
+
+
 
 # 推荐避免 tokenizer 多线程抢占
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -67,6 +72,26 @@ def cfg_get(ns, path, default=None):
             return default if is_last else None
 
     return cur
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Sign language pretraining")
+    # ====== 训练相关 ======
+    parser.add_argument("--config", type=str, default='config/pretrain_newtask_mini_1.yaml', help="Path to YAML config file. If None, use default in load_train_config().")
+    parser.add_argument("--epochs", type=int, default=20, help="Override number of training epochs.")
+    parser.add_argument("--batch_size", ype=int, default=4, help="Override training batch size.")
+    parser.add_argument("--optimizer", type=str, default="adamW", help="Override optimizer name in config, e.g. adam / adamw / sgd.")
+    # ====== 设备 & 分布式相关 ======
+    parser.add_argument("--device", type=str, default="0", help="CUDA device(s), e.g. '0' or '0,1,2' or 'cpu'. " "If empty, use all visible GPUs." )
+    parser.add_argument("--distributed", action="store_true", help="Enable distributed training (DDP) over the selected device(s).")
+    parser.add_argument("--local_rank", type=int, default=-1, help="DDP local rank, usually set automatically by torch.distributed.launch/torchrun.")
+
+    args = parser.parse_args()
+    print("=== Parsed args ===")
+    for k, v in vars(args).items():
+        print(f"{k}: {v}")
+    print("===================")
+    return args
 
 
 # ------------------------------
@@ -176,7 +201,8 @@ class Trainer:
             raise ValueError("No trainable parameters found!")
 
         lr = cfg_get(self.config, "Training.learning_rate", 1e-4)
-        self.optimizer = Adam(params, lr=lr)
+        # self.optimizer = Adam(params, lr=lr)
+        self.optimizer = build_optimizer(cfg, params)
         logger.info(f"Initialized Adam optimizer with lr={lr}")
 
         if cfg_get(self.config, "optimizer.scheduler") == "cosine":
@@ -261,9 +287,8 @@ class Trainer:
         rgb_pooled = rgb_feat.mean(dim=1)  # [B, 512]
 
         # 文本
-        if "text" not in self.models:
-            raise ValueError("TextEncoder required for contrastive learning")
-        text_out, attn_mask = self.models["text"](tgt_input["gt_sentence"])
+        text_in = tgt_input["gt_sentence"].to(self.device)
+        text_out, attn_mask = self.models["text"](text_in)
 
         # 文本池化：句向量 or 按 mask 平均
         if text_out.ndim == 2:
@@ -324,6 +349,7 @@ class Trainer:
     def train_epoch(self, epoch: int):
         """一个 epoch，轮询多个数据集混合训练"""
         for m in self.models.values(): m.train()
+        self.proj.train()
         total_loss = 0.0
 
         # 收集可训练参数一次
@@ -409,17 +435,18 @@ class Trainer:
 def main():
     set_seed(42)
 
-    # 加载配置（已有的工具会把 YAML 读成 Namespace）
     cfg = load_train_config()
     logger.info("Loaded configuration")
 
-    # 初始化 W&B（保留）
-    if getattr(cfg.wandb, 'use', False):
+    # 安全拿到 wandb 子配置
+    wandb_cfg = getattr(cfg, "wandb", None)
+
+    if wandb_cfg is not None and getattr(wandb_cfg, "use", False):
         try:
             wandb.init(
-                project=getattr(cfg.wandb, 'project', 'sign-language-pretraining'),
-                name=getattr(cfg.wandb, 'run_name', 'experiment'),
-                config=vars(cfg)
+                project=getattr(wandb_cfg, "project", "sign-language-pretraining"),
+                name=getattr(wandb_cfg, "run_name", "experiment"),
+                config=vars(cfg),
             )
             logger.info("Initialized Weights & Biases")
         except Exception as e:

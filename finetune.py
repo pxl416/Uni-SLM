@@ -1,11 +1,9 @@
 # finetune.py
 import os
-import time
 import json
 import logging
 import argparse
 from argparse import Namespace
-from contextlib import nullcontext
 from types import SimpleNamespace
 
 import torch
@@ -15,8 +13,11 @@ from torch.optim import AdamW
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 import wandb
-import yaml
-from utils.dataset import create_dataloader
+import yaml  # NEW: for YAML loading
+
+# NOTE: 不再强依赖 utils.config.load_train_config，直接本地加载 YAML
+# from utils.config import load_train_config
+from datasets.datasets import create_dataloader
 from models.Encoder.rgb_encoder import RGBEncoder
 from models.Encoder.text_encoder import TextEncoder
 from models.Head.retrieval import RetrievalHead
@@ -234,8 +235,19 @@ def apply_freeze_from_cfg(cfg, rgb, text, proj):
 # dataloaders
 # ------------------------------
 def phase_alias(name: str) -> str:
+    """
+    Finetune:
+      train → dev
+      val   → test
+    其他名称原样返回
+    """
     n = (name or "").lower()
-    return "dev" if n in ("val", "valid", "validation") else n
+    if n == "train":
+        return "dev"
+    if n in ("val", "valid", "validation"):
+        return "test"
+    return n
+
 
 
 def build_loader(cfg, phase, device):
@@ -618,8 +630,13 @@ def train_eval_translation(cfg, device, rgb):
     amp_enabled = cfg_get(cfg, "Finetune.amp", True) and torch.cuda.is_available()
     scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
 
-    train_loader = build_loader(cfg, "train", device)
-    val_loader = build_loader(cfg, "val", device)
+    # train_loader = build_loader(cfg, "train", device)
+    # val_loader = build_loader(cfg, "val", device)
+    train_split = cfg.Finetune.train_split  # dev
+    eval_split = cfg.Finetune.eval_split  # test
+
+    train_loader = build_loader(cfg, train_split, device)
+    val_loader = build_loader(cfg, eval_split, device)
 
     epochs = int(cfg_get(cfg, "Training.epochs", 10))
     best_val_loss = float('inf')
@@ -714,7 +731,7 @@ def main():
     parser.add_argument(
         "--cfg",
         type=str,
-        default="config/finetune.yaml",
+        default="config/finetune_newtask_mini_1.yaml",
         help="Path to finetune YAML config (default: config/finetune.yaml)"
     )
     args = parser.parse_args()

@@ -1,0 +1,138 @@
+# ---------- 顶层 ----------
+mode: "pretrain"
+active_datasets: ["CSL_Daily", "CSL_News"]
+active_weights: [1.0, 0.5]     # Daily 占 2/3，News 占 1/3
+
+
+AMP:
+  enabled: true
+  dtype: bf16
+
+Saving:
+  split_modalities: true
+
+# ---------- 数据集配置 ----------
+datasets:
+  CSL_Daily:
+    root: data/mini_CSL_Daily
+    rgb_dir: sentence
+    split_file: data/mini_CSL_Daily/sentence_label/split_1.txt
+    segments:
+      label_dir: sentence_label
+
+    # 如果要做空间监督，建议声明关键点目录（像素坐标）
+    use_keypoints: true            # 若没有关键点，可先 false；空间损失会被自动跳过
+    keypoints_dir: keypoints       # 相对 root 的路径，如 data/mini_CSL_Daily/keypoints/<vid>/<frame>.npy
+    joints: 21
+    keypoint_dims: 2               # 2:(x,y) 或 3:(x,y,conf)
+
+    max_text_len: 128
+    use_rgb:  true
+    use_pose: false
+    use_text: true
+    token_level: char
+
+    temporal:
+      T: 32
+      jitter: false
+      min_frames: 32
+      max_frames: 32
+      augment:
+        size: 224
+        channel: rgb
+        degrees: 0
+        translate: 0.0
+        scale: [1.0, 1.0]
+        shear: 0.0
+        hue: 0.0
+        saturation: 0.0
+        brightness: 0.0
+        contrast: 0.0
+      augment_val:
+        enable: false
+        size: 224
+        channel: rgb
+        gray_as_rgb: false
+        mean: [0.485, 0.456, 0.406]
+        std:  [0.229, 0.224, 0.225]
+
+    # ！！！关键：捏合/拼接参数应该放在数据集下（由 Dataset 生效）
+    merge:
+      enabled: true
+      merge_ratio: 0.6
+      max_segments: 3
+      transition_frames: 4
+      long_segment_threshold: 64
+
+# ---------- 编码器/训练设置 ----------
+Model:
+  RGBEncoder:
+    enable: true
+    output_dim: 512
+    freeze: false
+    pretrained: "../pretrained-model/latest/rgb_encoder.pt" # /home/pxl416/PeixiLiu/px_proj/Uni-SLM/pretrained-model/latest/rgb_encoder.pt
+
+  PoseEncoder:
+    enable: false
+    output_dim: 256
+    freeze: false
+    pretrained: ""
+
+  TextEncoder:
+    enable: true
+    model_path: "pretrained-model/latest/text_encoder.pt"
+    output_dim: 384
+    freeze: true
+    pretrained: ""
+
+  Fusion:
+    pose_rgb:  { enabled: false }
+    pose_text: { enabled: false }
+    rgb_text:  { enabled: false }
+
+# ---------- 预训练方法 ----------
+Pretraining:
+  task: "multitask"                 # 支持 "contrastive" 或 "multitask"
+  tasks: ["semantics", "time", "space"]   # 任意子集：["semantics"], ["time"], ["space"], 或组合
+  weights:
+    semantics: 1.0
+    time: 1.0
+    space: 1.0
+  # 对比学习超参（Trainer 里按这个路径读取）
+  temperature: 0.07
+  projection_dim: 256
+  # 空间头网格大小
+  space_grid: 14
+
+  # 可选：兼容旧字段（不必删，代码也会忽略）
+  task_contrastive:
+    enabled: true
+  task_time:
+    enabled: true
+  task_space:
+    enabled: true
+
+  resume: ""   # 留空或填 ckpt 路径
+
+# ---------- 训练超参数 ----------
+Training:
+  num_workers: 0
+  learning_rate: 1e-4
+  grad_clip: 1.0
+  log_every: 50
+  save_every: 1
+
+optimizer:
+  name: adamw
+  weight_decay: 0.01
+  momentum: 0.9        # 仅 SGD 用
+
+
+
+# ---------- 日志和保存 ----------
+wandb:
+  use: true
+  run_name: pretrain_minidaily_newtask_1102
+  project: Uni-slm-newtask
+
+save_dir: ../checkpoints1/pretrain_minidaily_newtask_1102

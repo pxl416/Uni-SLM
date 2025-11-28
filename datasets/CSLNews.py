@@ -12,7 +12,7 @@ import torch
 from PIL import Image
 from decord import VideoReader, cpu
 from torchvision import transforms
-from utils.dataset import BaseDataset
+from datasets.datasets import BaseDataset
 
 
 # ============ 小工具 ============

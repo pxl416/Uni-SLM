@@ -97,6 +97,6 @@ def split_file(input_path, output_folder, ratio=(0.8, 0.1, 0.1), seed=3407):
 
 if __name__ == "__main__":
     # 按需改成你的绝对路径
-    input_path   = "/home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/sentence_label/split_1.txt"
-    output_folder= "/home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/sentence_label"
+    input_path   = "/home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily/sentence_label/split_1.txt"
+    output_folder= "/home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily/sentence_label"
     split_file(input_path, output_folder)

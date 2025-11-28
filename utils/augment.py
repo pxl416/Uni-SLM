@@ -8,6 +8,7 @@ import torchvision.transforms.functional as F
 from torchvision.transforms import InterpolationMode
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
+
 TensorOrPIL = Union[torch.Tensor, Image.Image]
 
 def sample_temporal_indices(
