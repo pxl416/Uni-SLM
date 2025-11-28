@@ -239,3 +239,99 @@ class RecognitionHeadCTC(nn.Module):
                 f"hidden_dim={self.input_proj[0].out_features}, "
                 f"n_layers={len(self.encoder.layers)}, "
                 f"trainable=True, blank_id={self.blank_id})")
+
+
+class RecognitionFinetuner:
+    """
+    匹配 CSLDailyDataset 返回格式：
+    return vid, pose_sample, gloss_ids, support
+    """
+    def __init__(self, cfg, device, rgb_encoder, head):
+        self.cfg = cfg
+        self.device = device
+        self.rgb = rgb_encoder.to(device)
+        self.head = head.to(device)
+
+        self.optimizer = torch.optim.AdamW(
+            list(self.rgb.parameters()) + list(self.head.parameters()),
+            lr=float(cfg.lr_head)
+        )
+        self.scaler = torch.cuda.amp.GradScaler(enabled=True)
+
+    # ----------------------------------------
+    # 关键修复1：目标拼接
+    # ----------------------------------------
+    def _pack_targets(self, gloss_ids_list: List[torch.Tensor]):
+        """
+        gloss_ids_list: List[tensor([tokens])]
+        """
+        target_lengths = torch.tensor(
+            [len(g) for g in gloss_ids_list], dtype=torch.long
+        )
+        packed = torch.cat(gloss_ids_list, dim=0) if len(gloss_ids_list) > 0 else torch.tensor([], dtype=torch.long)
+        return packed, target_lengths
+
+    # ----------------------------------------
+    # 训练
+    # ----------------------------------------
+    def train_epoch(self, loader):
+        self.rgb.train()
+        self.head.train()
+
+        total = 0
+        for batch in loader:
+            # Dataset 返回结构：
+            # vids, pose, gloss_ids, support
+            vids, pose, gloss_ids, support = batch
+
+            rgb = support["rgb_img"].to(self.device)          # [B,T,3,224,224]
+            mask = support["attn_mask"].to(self.device)       # [B,T]
+
+            # 打包 label
+            packed_targets, target_lengths = self._pack_targets(gloss_ids)
+            input_lengths = mask.sum(dim=1).long()
+
+            with torch.cuda.amp.autocast(enabled=True):
+                feat = self.rgb(rgb)                           # [B,T,F]
+                logits = self.head(feat, src_key_padding_mask=~mask.bool())
+                loss = self.head.compute_loss(
+                    logits, packed_targets, input_lengths, target_lengths
+                )
+
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
+
+            total += loss.item()
+
+        return {"loss": total / len(loader)}
+
+    # ----------------------------------------
+    # 验证
+    # ----------------------------------------
+    @torch.no_grad()
+    def eval_epoch(self, loader):
+        self.rgb.eval()
+        self.head.eval()
+
+        total = 0
+        for batch in loader:
+            vids, pose, gloss_ids, support = batch
+
+            rgb = support["rgb_img"].to(self.device)
+            mask = support["attn_mask"].to(self.device)
+
+            packed_targets, target_lengths = self._pack_targets(gloss_ids)
+            input_lengths = mask.sum(dim=1).long()
+
+            feat = self.rgb(rgb)
+            logits = self.head(feat, src_key_padding_mask=~mask.bool())
+            loss = self.head.compute_loss(
+                logits, packed_targets, input_lengths, target_lengths
+            )
+
+            total += loss.item()
+
+        return {"loss": total / len(loader)}
+

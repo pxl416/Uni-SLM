@@ -15,10 +15,7 @@ from torch.optim import AdamW
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 import wandb
-import yaml  # NEW: for YAML loading
-
-# NOTE: 不再强依赖 utils.config.load_train_config，直接本地加载 YAML
-# from utils.config import load_train_config
+import yaml
 from utils.dataset import create_dataloader
 from models.Encoder.rgb_encoder import RGBEncoder
 from models.Encoder.text_encoder import TextEncoder
