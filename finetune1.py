@@ -21,58 +21,34 @@ from models.Encoder.text_encoder import TextEncoder
 from models.Head.retrieval import RetrievalHead
 from models.Head.recognition import RecognitionHeadCTC  # 预留，将来可实现
 from models.Head.translation import TranslationHeadMT5
-
+from utils.config import load_config, cfg_get
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# ------------------------------
-# Config Helpers
-# ------------------------------
-def load_yaml_config(path: str) -> dict:
-    """加载YAML配置并返回dict"""
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"Config file not found: {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
-def cfg_get(cfg: dict, path: str, default=None):
-    """从dict配置中安全获取嵌套值，如 cfg_get(cfg, 'Finetune.task', 'translation')"""
-    cur = cfg
-    for k in path.split("."):
-        if not isinstance(cur, dict):
-            return default
-        if k not in cur:
-            return default
-        cur = cur[k]
-    return cur
-
-
 def load_finetune_config(args):
-    cfg = load_yaml_config(args.config)
+    cfg = load_config(args.config)
 
-    # Override by args
+    # Override cfg by args
+    training = getattr(cfg, "Training", SimpleNamespace())
     if args.epochs is not None:
-        cfg.setdefault("Training", {})["epochs"] = args.epochs
-
+        training.epochs = args.epochs
     if args.batch_size is not None:
-        cfg.setdefault("Training", {})["batch_size"] = args.batch_size
-
+        training.batch_size = args.batch_size
     if args.lr_head is not None:
-        cfg.setdefault("Training", {})["learning_rate_head"] = args.lr_head
-
+        training.learning_rate_head = args.lr_head
     if args.lr_backbone is not None:
-        cfg.setdefault("Training", {})["learning_rate_backbone"] = args.lr_backbone
+        training.learning_rate_backbone = args.lr_backbone
+    cfg.Training = training
 
-    # device override
+    # Device override
     if args.device is not None:
-        cfg["device"] = args.device
+        cfg.device = args.device
     else:
-        cfg.setdefault("device", "0")  # default cuda:0
+        cfg.device = "0"
 
     return cfg
+
 
 
 
@@ -661,122 +637,6 @@ class TranslationFinetuner(BaseFinetuner):
         logger.info(f"Translation eval loss: {avg_loss:.4f}")
         return metrics
 
-# ------------------------------
-# Recognition Finetuner
-# ------------------------------
-# class RecognitionFinetuner(BaseFinetuner):
-#
-#     def _build_models(self):
-#         # RGB encoder
-#         Dv = cfg_get(self.cfg, "Encoders.rgb.output_dim", 512)
-#         self.rgb = RGBEncoder(pretrained=False, output_dim=Dv).to(self.device)
-#
-#         # vocab
-#         vocab_path = cfg_get(self.cfg, "Evaluation.recognition.vocab_path")
-#         with open(vocab_path, "r", encoding="utf-8") as f:
-#             vocab = [line.strip() for line in f if line.strip()]
-#         num_classes = len(vocab) + 1  # +blank
-#
-#         self.task_head = RecognitionHeadCTC(
-#             in_dim=Dv,
-#             num_classes=num_classes,
-#             hidden_dim=cfg_get(self.cfg, "Evaluation.recognition.hidden_dim", 512),
-#             num_layers=cfg_get(self.cfg, "Evaluation.recognition.num_layers", 2),
-#             dropout=cfg_get(self.cfg, "Evaluation.recognition.dropout", 0.1),
-#             blank_id=cfg_get(self.cfg, "Evaluation.recognition.blank_id", 0),
-#         ).to(self.device)
-#
-#         self._load_pretrained_weights()
-#         self._apply_freeze()
-#
-#     def _build_optimizer(self):
-#         lr_head = cfg_get(self.cfg, "Training.learning_rate_head", 3e-4)
-#         lr_back = cfg_get(self.cfg, "Training.learning_rate_backbone", 5e-5)
-#
-#         groups = []
-#
-#         g_head = params_with_lr([self.task_head], lr_head)
-#         if g_head:
-#             groups.append(g_head)
-#
-#         freeze_list = cfg_get(self.cfg, "Finetune.freeze", [])
-#         if "rgb" not in freeze_list:
-#             g_back = params_with_lr([self.rgb], lr_back)
-#             if g_back:
-#                 groups.append(g_back)
-#
-#         self.optimizer = AdamW(groups)
-#         self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
-#
-#     def train_epoch(self):
-#         self.task_head.train()
-#         self.rgb.train()
-#
-#         total_loss = 0.0
-#         pbar = tqdm(self.train_loader, desc="Training (recognition)")
-#
-#         for vids, poses, gloss_ids, support in pbar:
-#             rgb = support["rgb_img"].to(self.device)         # [B,T,C,H,W]
-#             mask = support["attn_mask"].to(self.device)      # [B,T]
-#             gloss_list = [g.to(self.device) for g in gloss_ids]
-#
-#             packed_targets = torch.cat(gloss_list, dim=0)
-#             target_lengths = torch.tensor([len(g) for g in gloss_list],
-#                                           dtype=torch.long,
-#                                           device=self.device)
-#             input_lengths = mask.sum(dim=1).long()
-#
-#             with torch.amp.autocast("cuda", enabled=self.amp_enabled):
-#                 feat = self.rgb(rgb)                         # [B,T,D]
-#                 logits = self.task_head(feat, src_key_padding_mask=~mask.bool())
-#                 loss = self.task_head.compute_loss(
-#                     logits, packed_targets, input_lengths, target_lengths
-#                 )
-#
-#             self.optimizer.zero_grad()
-#             if self.scaler.is_enabled():
-#                 self.scaler.scale(loss).backward()
-#                 self.scaler.unscale_(self.optimizer)
-#                 clip_grad_norm_(self.optimizer.param_groups[0]["params"], max_norm=self.grad_clip)
-#                 self.scaler.step(self.optimizer)
-#                 self.scaler.update()
-#             else:
-#                 loss.backward()
-#                 clip_grad_norm_(self.optimizer.param_groups[0]["params"], max_norm=self.grad_clip)
-#                 self.optimizer.step()
-#
-#             total_loss += loss.item()
-#             pbar.set_postfix(loss=loss.item())
-#
-#         return {"loss": total_loss / len(self.train_loader)}
-#
-#     @torch.no_grad()
-#     def evaluate(self):
-#         self.task_head.eval()
-#         self.rgb.eval()
-#
-#         total_loss = 0.0
-#
-#         for vids, poses, gloss_ids, support in tqdm(self.val_loader, desc="Evaluating (recognition)"):
-#             rgb = support["rgb_img"].to(self.device)
-#             mask = support["attn_mask"].to(self.device)
-#             gloss_list = [g.to(self.device) for g in gloss_ids]
-#
-#             packed_targets = torch.cat(gloss_list, dim=0)
-#             target_lengths = torch.tensor([len(g) for g in gloss_list],
-#                                           dtype=torch.long,
-#                                           device=self.device)
-#             input_lengths = mask.sum(dim=1).long()
-#
-#             feat = self.rgb(rgb)
-#             logits = self.task_head(feat, src_key_padding_mask=~mask.bool())
-#             loss = self.task_head.compute_loss(
-#                 logits, packed_targets, input_lengths, target_lengths
-#             )
-#             total_loss += loss.item()
-#
-#         avg = total_loss / len(self.val_loader)
-#         return {"loss": avg, "main_metric": -avg}
 
 
 # ------------------------------
@@ -971,7 +831,7 @@ class RecognitionFinetuner(BaseFinetuner):
 class FinetunerFactory:
     @staticmethod
     def create_finetuner(cfg: dict, device: torch.device) -> BaseFinetuner:
-        task = cfg_get(cfg, "Finetune.Evaluation", "retrieval").lower()
+        task = cfg_get(cfg, "Finetune.task", "retrieval").lower()
         logger.info(f"Starting finetuning task: {task}")
 
         if task == "retrieval":
@@ -1016,9 +876,9 @@ def main():
     set_seed()
 
     cfg = load_finetune_config(args)
-    # print('/*-/*-/*-')
-    # print(cfg["Evaluation"]["recognition"])
-    # print('/*-/*-/*-')
+    print('/*-/*-/*-')
+    print(cfg["Evaluation"]["recognition"])
+    print('/*-/*-/*-')
 
     # device
     if cfg["device"] == "cpu":
