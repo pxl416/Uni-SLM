@@ -3,7 +3,6 @@
 import os
 import logging
 import argparse
-from types import SimpleNamespace
 
 import torch
 from torch.optim import AdamW
@@ -30,18 +29,17 @@ from utils.metrics import compute_bleu, compute_rouge, compute_cer, compute_wer
 from utils.metrics import compute_wer, compute_cer
 import torch.nn.functional as F
 
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # WandB (safe import)
 try:
     import wandb
+
     WANDB_AVAILABLE = True
 except Exception:
     WANDB_AVAILABLE = False
     print("[Warn] wandb not installed; logging disabled.")
-
 
 
 # =========================================================
@@ -115,6 +113,7 @@ class RetrievalFinetuner:
     def __init__(self, cfg, device):
         self.cfg = cfg
         self.device = device
+        self.wandb_enabled = WANDB_AVAILABLE  # 原来 BaseFinetuner 里做的事，迁移过来
 
         train_cfg = getattr(cfg, "Training", SimpleNamespace())
         self.epochs = getattr(train_cfg, "epochs", 10)
@@ -129,9 +128,11 @@ class RetrievalFinetuner:
         logger.info("[Finetune] Building optimizer ...")
         self._build_optimizer()
 
+        # checkpoint 相关
         self.save_dir = getattr(cfg, "save_dir", "checkpoints")
         os.makedirs(self.save_dir, exist_ok=True)
         self.best_metric = -1e18
+
 
     # ------------------------------
     # DataLoader (same pattern as test_dataloader.py)
@@ -186,18 +187,28 @@ class RetrievalFinetuner:
     # Optimizer
     # ------------------------------
     def _build_optimizer(self):
-        train_cfg = self.cfg.Training
+        train_cfg = getattr(self.cfg, "Training", SimpleNamespace())
         lr_head = getattr(train_cfg, "learning_rate_head", 3e-4)
         lr_back = getattr(train_cfg, "learning_rate_backbone", 5e-5)
 
         groups = []
-        g_head = params_with_lr([self.task_head], lr_head)
-        if g_head: groups.append(g_head)
 
+        # head: 只包括检索 head（projection + 温度等）
+        g_head = params_with_lr([self.task_head], lr_head)
+        if g_head:
+            groups.append(g_head)
+
+        # backbone: RGB + Text encoder
         g_back = params_with_lr([self.rgb, self.text], lr_back)
-        if g_back: groups.append(g_back)
+        if g_back:
+            groups.append(g_back)
+
+        if not groups:
+            raise RuntimeError("[Retrieval] No parameters to optimize.")
 
         self.optimizer = AdamW(groups)
+        logger.info(f"[Optimizer][Retrieval] head lr={lr_head}, backbone lr={lr_back}")
+
 
     # ------------------------------
     # Batch extractor
@@ -228,7 +239,7 @@ class RetrievalFinetuner:
         rgb = rgb.to(self.device)
         rgb_len = rgb_len.to(self.device)
 
-        feat = self.rgb(rgb)      # [B,T,D]
+        feat = self.rgb(rgb)  # [B,T,D]
         B, T, _ = feat.shape
 
         mask = torch.zeros((B, T), dtype=torch.bool, device=self.device)
@@ -242,15 +253,35 @@ class RetrievalFinetuner:
         return feat
 
     # ------------------------------
-    # Train one epoch
+    # WandB logging (local helper)
     # ------------------------------
+    def _log_to_wandb(self, metrics, step=None, prefix=""):
+        """本地的 wandb 日志方法，替代之前 BaseFinetuner.log_to_wandb"""
+        if not self.wandb_enabled:
+            return
+
+        log_dict = {}
+        for k, v in metrics.items():
+            if isinstance(v, (int, float)):
+                key = f"{prefix}/{k}" if prefix else k
+                log_dict[key] = v
+
+        if not log_dict:
+            return
+
+        if step is not None:
+            wandb.log(log_dict, step=step)
+        else:
+            wandb.log(log_dict)
+
+
     def train_epoch(self):
         self.rgb.train()
         self.text.train()
         self.task_head.train()
 
         total_loss = 0
-        for batch in tqdm(self.train_loader, desc="Train (retrieval)"):
+        for batch_idx, batch in enumerate(tqdm(self.train_loader, desc="Train (retrieval)")):
             rgb, rgb_len, text = self._extract_batch(batch)
 
             vis_seq, vis_mask = self._encode_rgb(rgb, rgb_len)
@@ -273,12 +304,22 @@ class RetrievalFinetuner:
             self.optimizer.step()
             total_loss += loss.item()
 
-        avg_loss = total_loss / max(1, len(self.train_loader))
-        return {"loss": avg_loss, "main_metric": -avg_loss}
+            # === 添加步骤级别的日志记录 ===
+            if batch_idx % 10 == 0:  # 每10个batch记录一次
+                step_metrics = {
+                    "batch_loss": loss.item(),
+                    "learning_rate": self.optimizer.param_groups[0]['lr']
+                }
+                self._log_to_wandb(step_metrics, prefix="train/batch")
 
-    # ------------------------------
-    # Evaluate
-    # ------------------------------
+        avg_loss = total_loss / max(1, len(self.train_loader))
+        epoch_metrics = {"loss": avg_loss, "main_metric": -avg_loss}
+
+        # === 记录epoch级别的指标 ===
+        self._log_to_wandb(epoch_metrics, prefix="train/epoch")
+
+        return epoch_metrics
+
     @torch.no_grad()
     def evaluate(self):
         self.rgb.eval()
@@ -323,10 +364,15 @@ class RetrievalFinetuner:
             )
             metrics["loss"] = avg_loss
             metrics["main_metric"] = metrics.get("mean_R1", -avg_loss)
+
+            # === 记录验证指标 ===
+            self._log_to_wandb(metrics, prefix="eval")
+
             return metrics
 
-        return {"loss": avg_loss, "main_metric": -avg_loss}
-
+        eval_metrics = {"loss": avg_loss, "main_metric": -avg_loss}
+        self._log_to_wandb(eval_metrics, prefix="eval")
+        return eval_metrics
 
 
 # =========================================================
@@ -351,6 +397,12 @@ class TranslationFinetuner:
         # ---------- optimizer ----------
         self._build_optimizer()
 
+        # checkpoint 相关（和 RetrievalFinetuner 对齐）
+        self.save_dir = getattr(cfg, "save_dir", "checkpoints")
+        os.makedirs(self.save_dir, exist_ok=True)
+        self.best_metric = -1e18
+
+
         print("[Finetune] TranslationFinetuner ready.")
 
     # --------------------------------------------------------
@@ -366,7 +418,7 @@ class TranslationFinetuner:
         )
 
         self.train_loader = create_dataloader(args, self.cfg, phase="train")
-        self.val_loader   = create_dataloader(args, self.cfg, phase="dev")
+        self.val_loader = create_dataloader(args, self.cfg, phase="dev")
 
         print(f"[Data] train batches = {len(self.train_loader)}")
         print(f"[Data] val   batches = {len(self.val_loader)}")
@@ -408,19 +460,25 @@ class TranslationFinetuner:
     # --------------------------------------------------------
     def _build_optimizer(self):
         train_cfg = getattr(self.cfg, "Training", SimpleNamespace())
-        lr_head = getattr(train_cfg, "learning_rate_head", 1e-4)
-        lr_back = getattr(train_cfg, "learning_rate_backbone", 1e-5)
+        lr_head = getattr(train_cfg, "learning_rate_head", 3e-4)
+        lr_back = getattr(train_cfg, "learning_rate_backbone", 5e-5)
 
         groups = []
         g_head = params_with_lr([self.task_head], lr_head)
-        g_rgb  = params_with_lr([self.rgb], lr_back)
+        g_back = params_with_lr([self.rgb], lr_back)
 
-        if g_head: groups.append(g_head)
-        if g_rgb:  groups.append(g_rgb)
+        if g_head:
+            groups.append(g_head)
+        if g_back:
+            groups.append(g_back)
+
+        if not groups:
+            raise RuntimeError("[Translation] No parameters to optimize.")
 
         self.optimizer = AdamW(groups)
 
-        print(f"[Optimizer] head lr={lr_head}, backbone lr={lr_back}")
+        print(f"[Optimizer][Translation] head lr={lr_head}, backbone lr={lr_back}")
+
 
     # --------------------------------------------------------
     # helpers
@@ -434,8 +492,8 @@ class TranslationFinetuner:
 
         src, tgt = batch
 
-        rgb = src["rgb_img"]       # [B,T,C,H,W]
-        rgb_len = src["rgb_len"]   # [B]
+        rgb = src["rgb_img"]  # [B,T,C,H,W]
+        rgb_len = src["rgb_len"]  # [B]
         tgt_text = tgt["gt_sentence"]
 
         return rgb, rgb_len, tgt_text
@@ -443,9 +501,9 @@ class TranslationFinetuner:
     def _encode_rgb(self, rgb, rgb_len):
         rgb = rgb.to(self.device)
         rgb_len = rgb_len.to(self.device)
-        feat = self.rgb(rgb)      # [B,T,D]
-        B,T,_ = feat.shape
-        mask = torch.zeros((B,T), dtype=torch.bool, device=self.device)
+        feat = self.rgb(rgb)  # [B,T,D]
+        B, T, _ = feat.shape
+        mask = torch.zeros((B, T), dtype=torch.bool, device=self.device)
         for i in range(B):
             mask[i, :rgb_len[i]] = True
         return feat, mask
@@ -540,44 +598,6 @@ class TranslationFinetuner:
             "main_metric": bleu,  # 可以改成 WER/CER/ROUGE 等你喜欢的
         }
         return metrics
-    # @torch.no_grad()
-    # def evaluate(self):
-    #     self.rgb.eval()
-    #     self.task_head.eval()
-    #
-    #     tot_loss = 0.0
-    #     n = 0
-    #     preds = []
-    #     refs = []
-    #
-    #     for batch in tqdm(self.val_loader, desc="Eval (translation)"):
-    #         rgb, rgb_len, tgt_text = self._extract_batch(batch)
-    #         vis_seq, vis_mask = self._encode_rgb(rgb, rgb_len)
-    #
-    #         out = self.task_head(
-    #             vis_seq=vis_seq,
-    #             vis_mask=vis_mask,
-    #             tgt_texts=tgt_text,
-    #         )
-    #         loss = out["loss"]
-    #
-    #         # ==== decode ====
-    #         prepared = self.task_head.prepare_inputs(vis_seq, vis_mask)
-    #         gen_ids = self.task_head.generate(prepared, max_new_tokens=64)
-    #         pred_text = self.task_head.tok.batch_decode(gen_ids, skip_special_tokens=True)
-    #
-    #         preds.extend(pred_text)
-    #         refs.extend(tgt_text)
-    #
-    #         tot_loss += loss.item()
-    #         n += 1
-    #
-    #     avg = tot_loss / max(1, n)
-    #     bleu = self._compute_bleu(preds, refs)
-    #
-    #     print(f"[Eval] loss={avg:.4f}, BLEU={bleu:.4f}")
-    #
-    #     return {"loss": avg, "BLEU": bleu, "main_metric": bleu}
 
     # --------------------------------------------------------
     # Tiny BLEU
@@ -589,7 +609,6 @@ class TranslationFinetuner:
             return float(bleu.score)
         except:
             return 0.0
-
 
 
 # =========================================================
@@ -636,7 +655,7 @@ class RecognitionFinetuner:
 
         # ------ 识别任务配置 ------
         # num_classes 必须 >= 实际 gloss vocab size + 1（最后一个留给 CTC blank）
-        self.num_classes = cfg_get(self.cfg, "Evaluation.recognition.num_classes", 1500)
+        self.num_classes = cfg_get(self.cfg, "Evaluation.recognition.num_classes", 20000)
 
         # gloss 词表：字符串 -> id
         self.gloss2id = {}
@@ -647,6 +666,12 @@ class RecognitionFinetuner:
         self._build_dataloaders()
         self._build_models()
         self._build_optimizer()
+
+        # checkpoint 相关
+        self.save_dir = getattr(cfg, "save_dir", "checkpoints")
+        os.makedirs(self.save_dir, exist_ok=True)
+        self.best_metric = -1e18
+
 
     # -----------------------------
     # dataloaders
@@ -660,7 +685,7 @@ class RecognitionFinetuner:
 
         logger.info("[Finetune] Building dataloaders (recognition)...")
         self.train_loader = create_dataloader(args, self.cfg, phase="train")
-        self.val_loader   = create_dataloader(args, self.cfg, phase="dev")
+        self.val_loader = create_dataloader(args, self.cfg, phase="dev")
 
         logger.info(f"[Data] train batches = {len(self.train_loader)}")
         logger.info(f"[Data] val   batches = {len(self.val_loader)}")
@@ -695,8 +720,8 @@ class RecognitionFinetuner:
     # -----------------------------
     def _build_optimizer(self):
         train_cfg = getattr(self.cfg, "Training", SimpleNamespace())
-        lr_head = getattr(train_cfg, "lr_head", 3e-4)
-        lr_back = getattr(train_cfg, "lr_backbone", 5e-5)
+        lr_head = getattr(train_cfg, "learning_rate_head", 3e-4)
+        lr_back = getattr(train_cfg, "learning_rate_backbone", 5e-5)
 
         groups = []
         g_head = params_with_lr([self.head], lr_head)
@@ -712,7 +737,8 @@ class RecognitionFinetuner:
         self.optimizer = AdamW(groups)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
 
-        logger.info(f"[Optimizer] head lr={lr_head}, backbone lr={lr_back}")
+        logger.info(f"[Optimizer][Recognition] head lr={lr_head}, backbone lr={lr_back}")
+
 
     # ======================================================
     # batch 解包
@@ -726,8 +752,8 @@ class RecognitionFinetuner:
 
         src, tgt = batch
 
-        rgb       = src.get("rgb_img", None)
-        rgb_len   = src.get("rgb_len", None)
+        rgb = src.get("rgb_img", None)
+        rgb_len = src.get("rgb_len", None)
         gloss_raw = tgt.get("gt_gloss", None)
 
         if rgb is None:
@@ -778,7 +804,7 @@ class RecognitionFinetuner:
                 if self._next_gloss_id >= self.num_classes - 1:
                     raise RuntimeError(
                         f"[Recognition] gloss vocab size exceeded num_classes-1 "
-                        f"({self.num_classes-1}). token='{tok}'"
+                        f"({self.num_classes - 1}). token='{tok}'"
                     )
                 self.gloss2id[tok] = self._next_gloss_id
                 self._next_gloss_id += 1
@@ -825,7 +851,7 @@ class RecognitionFinetuner:
         lengths = []
 
         for g in gloss_list:
-            t = self._gloss_seq_to_ids(g)   # [L]
+            t = self._gloss_seq_to_ids(g)  # [L]
             seq_tensors.append(t)
             lengths.append(len(t))
 
@@ -1012,20 +1038,28 @@ def main():
     args = parse_args()
     set_seed()
 
-    # === Load config EXACTLY like test_dataloader.py ===
+    # === Load config ===
     raw_cfg = load_yaml(args.config)
     cfg = dict_to_ns(raw_cfg)
 
     # -------------------------------
-    # Init wandb
+    # 提前初始化 wandb（使用全局变量，不重新定义）
     # -------------------------------
-    if WANDB_AVAILABLE:
-        wandb.init(
-            project=getattr(cfg, "wandb_project", "Uni-SLM"),
-            name=getattr(cfg, "wandb_run_name", None),
-            config=raw_cfg,  # 原始 YAML 直接记录到 wandb config
-        )
-        print("[WandB] initialized.")
+    wandb_available = WANDB_AVAILABLE  # 使用局部变量来避免修改全局变量
+
+    if wandb_available:
+        try:
+            wandb.init(
+                project=getattr(cfg, "wandb_project", "Uni-SLM"),
+                name=getattr(cfg, "wandb_run_name", f"finetune-{getattr(cfg.Finetune, 'task', 'unknown')}"),
+                config=raw_cfg,
+            )
+            print(f"[WandB] Initialized. Project: {wandb.run.project}, Name: {wandb.run.name}")
+        except Exception as e:
+            print(f"[WandB] Initialization failed: {e}")
+            wandb_available = False  # 只修改局部变量
+    else:
+        print("[WandB] Not available, skipping initialization.")
 
     # Inject CLI overrides
     if hasattr(cfg, "Training"):
@@ -1049,20 +1083,22 @@ def main():
         logger.info(f"===== Epoch {epoch + 1}/{cfg.Training.epochs} =====")
 
         train_res = finetuner.train_epoch()
-        print(train_res)
+        print(f"Train results: {train_res}")
 
         eval_res = finetuner.evaluate()
-        print(eval_res)
+        print(f"Eval results: {eval_res}")
 
         main_metric = eval_res["main_metric"]
 
-        if WANDB_AVAILABLE:
-            log_dict = {}
+        # 使用局部变量 wandb_available
+        if wandb_available:
+            # 记录epoch级别的汇总指标
+            epoch_log = {"epoch": epoch + 1}
             for k, v in train_res.items():
-                log_dict[f"train/{k}"] = v
+                epoch_log[f"summary/train_{k}"] = v
             for k, v in eval_res.items():
-                log_dict[f"eval/{k}"] = v
-            wandb.log(log_dict)
+                epoch_log[f"summary/eval_{k}"] = v
+            wandb.log(epoch_log)
 
         # ---------- Save last ----------
         model_dict = {

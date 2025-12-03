@@ -3,6 +3,79 @@ import numpy as np
 import scipy.stats
 
 
+# utils/metrics.py
+# -*- coding: utf-8 -*-
+import numpy as np
+from typing import List
+from difflib import SequenceMatcher
+
+# ----------------------------------------------------------
+# BLEU (sacrebleu)
+# ----------------------------------------------------------
+def compute_bleu(preds: List[str], refs: List[str]):
+    try:
+        import sacrebleu
+        bleu = sacrebleu.corpus_bleu(preds, [refs])
+        return float(bleu.score)
+    except Exception:
+        return 0.0
+
+
+# ----------------------------------------------------------
+# ROUGE
+# ----------------------------------------------------------
+def compute_rouge(preds: List[str], refs: List[str]):
+    try:
+        from rouge_score import rouge_scorer
+        scorer = rouge_scorer.RougeScorer(["rouge1", "rougeL"], use_stemmer=True)
+
+        scores_1 = []
+        scores_L = []
+        for p, r in zip(preds, refs):
+            s = scorer.score(r, p)
+            scores_1.append(s["rouge1"].fmeasure)
+            scores_L.append(s["rougeL"].fmeasure)
+
+        return {
+            "rouge1": float(np.mean(scores_1)),
+            "rougeL": float(np.mean(scores_L)),
+        }
+    except Exception:
+        return {"rouge1": 0.0, "rougeL": 0.0}
+
+
+# ----------------------------------------------------------
+# Character Error Rate (CER)
+# ----------------------------------------------------------
+def compute_cer(preds: List[str], refs: List[str]):
+    tot_dist, tot_len = 0, 0
+    for p, r in zip(preds, refs):
+        sm = SequenceMatcher(None, r, p)
+        dist = sum(block.size for block in sm.get_opcodes() if block[0] != 'equal')
+        tot_dist += dist
+        tot_len += len(r)
+    return tot_dist / max(1, tot_len)
+
+
+# ----------------------------------------------------------
+# Word Error Rate (WER)
+# ----------------------------------------------------------
+def compute_wer(preds: List[str], refs: List[str]):
+    tot_dist, tot_len = 0, 0
+    for p, r in zip(preds, refs):
+        r_words = r.split()
+        p_words = p.split()
+
+        sm = SequenceMatcher(None, r_words, p_words)
+        dist = sum(block[2] - block[1] for block in sm.get_opcodes() if block[0] != 'equal')
+
+        tot_dist += dist
+        tot_len += len(r_words)
+
+    return tot_dist / max(1, tot_len)
+
+
+
 def t2v_metrics(sims, query_masks=None):
     """Compute retrieval metrics from a similiarity matrix.
 

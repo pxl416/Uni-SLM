@@ -997,8 +997,7 @@ class FinetunerFactory:
 def parse_args():
     parser = argparse.ArgumentParser(description="Uni-SLM Finetuning")
 
-    parser.add_argument("--config", type=str,
-                        default="config/finetune1.yaml")
+    parser.add_argument("--config", type=str, default="config/finetune1.yaml")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr_head", type=float, default=1e-3)
