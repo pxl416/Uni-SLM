@@ -145,3 +145,33 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+/home/pxl416/miniconda/envs/uslm_py310/bin/python /home/pxl416/PeixiLiu/px_proj/Uni-SLM/tools/test_dataloader.py 
+[DEBUG] BaseDataset.collate_fn loaded.
+[Info] Dataset size: 18401
+[Info] Batch size = 2
+[Info] Num workers = 2
+
+[Check] Fetching one batch...
+
+==== Batch 0 ====
+
+[Debug] type(batch) = <class 'list'>
+[Mode] Detected (src_input, tgt_input) tuple
+[Name] ['S002288_P0005_T00', 'S006585_P0000_T00'] ... (total 2)
+[Pose] keypoints shape: torch.Size([2, 1, 21, 3])
+[Pose] kp_len: [1, 1]
+[RGB] rgb_img shape: torch.Size([2, 1, 3, 224, 224])
+[RGB] rgb_len: [1, 1]
+[Segments] batch size: 2
+  Sample 0 segments (0): []
+  Sample 1 segments (0): []
+[Text] ['团队内只有分工合作才能提高工作效率。', '把花插在玻璃瓶里。']
+
+[Status] Batch test completed successfully.
+
+Process finished with exit code 0
+
+"""
+

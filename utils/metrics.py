@@ -47,14 +47,37 @@ def compute_rouge(preds: List[str], refs: List[str]):
 # ----------------------------------------------------------
 # Character Error Rate (CER)
 # ----------------------------------------------------------
-def compute_cer(preds: List[str], refs: List[str]):
-    tot_dist, tot_len = 0, 0
-    for p, r in zip(preds, refs):
-        sm = SequenceMatcher(None, r, p)
-        dist = sum(block.size for block in sm.get_opcodes() if block[0] != 'equal')
-        tot_dist += dist
-        tot_len += len(r)
-    return tot_dist / max(1, tot_len)
+def compute_cer(preds, refs):
+    """
+    preds, refs: List[str]
+    CER = edit_distance(pred, ref) / len(ref)
+    """
+    import difflib
+    assert len(preds) == len(refs)
+
+    total_dist = 0
+    total_len = 0
+
+    for pred, ref in zip(preds, refs):
+        sm = difflib.SequenceMatcher(None, pred, ref)
+        dist = 0
+
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                continue
+            # 替换、删除、插入
+            if tag == "replace":
+                dist += max(i2 - i1, j2 - j1)
+            elif tag == "delete":
+                dist += (i2 - i1)
+            elif tag == "insert":
+                dist += (j2 - j1)
+
+        total_dist += dist
+        total_len += len(ref)
+
+    return total_dist / max(1, total_len)
+
 
 
 # ----------------------------------------------------------

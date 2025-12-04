@@ -27,6 +27,20 @@ REQUIRED_SCHEMAS: Dict[str, Tuple[str, ...]] = {
     ),
 }
 
+# utils/config.py 中追加的工具函数
+
+def load_yaml(path: str):
+    """从 YAML 文件加载为 Python dict。"""
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def dict_to_ns(d):
+    """递归地把 dict 转为 SimpleNamespace，便于点号访问。"""
+    if isinstance(d, dict):
+        return SimpleNamespace(**{k: dict_to_ns(v) for k, v in d.items()})
+    return d
+
 
 # =============== 基础工具 ===============
 

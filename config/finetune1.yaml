@@ -1,6 +1,4 @@
-# ======================================================
 # ================  Datasets Config  ===================
-# ======================================================
 
 active_datasets: ["CSL_Daily"]
 # active_weights: [1.0, 0.5]  # 如需多数据集时可恢复
@@ -57,11 +55,7 @@ datasets:
       min_frames: 1
       max_frames: 256
 
-
-
-# ======================================================
 # ================  Encoders Config  ====================
-# ======================================================
 
 Encoders:
   rgb:
@@ -71,9 +65,7 @@ Encoders:
   text:
     output_dim: 384
 
-# ======================================================
 # ================  Training Generic  ===================
-# ======================================================
 
 Training:
   batch_size: 2
@@ -86,14 +78,10 @@ Training:
 
   grad_clip: 1.0
 
-
-
-# ======================================================
 # ================  Finetune Control  ===================
-# ======================================================
 
 Finetune:
-  task: recognition        # retrieval / recognition / translation
+  task: retrieval      # retrieval / recognition / translation
 
   train_split: val
   eval_split:  test
@@ -109,11 +97,7 @@ Finetune:
     proj_rgb_path: null
     proj_text_path: null
 
-
-
-# ======================================================
 # ================  Evaluation Config  ==================
-# ======================================================
 
 Evaluation:
   retrieval:
@@ -124,16 +108,16 @@ Evaluation:
     temperature: 0.07
 
   recognition:
-    mode: true
+    mode: false
     in_dim: 512
-    num_classes: 2000
+    num_classes: 20000
     hidden_dim: 512
     num_layers: 2
     dropout: 0.1
     blank_id: 0
 
   translation:
-    mode: false
+    mode: true
     model_type: mt5
     model_path: google/mt5-base
     tokenizer_path: google/mt5-base
@@ -158,6 +142,6 @@ seed: 3407
 save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetune
 
 wandb:
-  use: false
+  use: true
   project: uni-slm-finetune
-  run_name: csl-daily-split1-1130
+  run_name: ft-retrieval-1204
