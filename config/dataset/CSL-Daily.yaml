@@ -1,0 +1,59 @@
+# CSL-Daily Dataset Configuration
+
+dataset:
+  modalities:
+    rgb: true
+    pose: false
+    text: true
+
+  paths:
+    root: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily
+    rgb: sentence
+    pose: null
+    text: sentence_label/csl2020ct_v2.pkl
+    segments: sentence_label/video_map.txt
+    gloss_map: sentence_label/gloss_map.txt
+
+  splits:
+    train: sentence_label/split_1_train.txt
+    dev:   sentence_label/split_1_dev.txt
+    test:  sentence_label/split_1_test.txt
+
+
+# Dataset-level Augmentation (覆盖 global，不受 task 影响)
+
+augment:
+
+  rgb:
+    random_resized_crop:
+      enabled: false
+      scale: [0.8, 1.0]
+      ratio: [0.9, 1.1]
+
+    horizontal_flip:
+      enabled: false
+      p: 0.5
+
+    color_jitter:
+      enabled: false
+      brightness: 0.1
+      contrast: 0.1
+      saturation: 0.1
+      hue: 0.05
+
+    gaussian_blur:
+      enabled: false
+
+  pose:
+    jitter:
+      enabled: false
+      noise: 0.01
+
+  text:
+    mixed: 0.15         # 例如 gloss mask、token drop 等
+
+  temporal:
+    min_frames: 1
+    max_frames: 32
+    jitter: false
+    strategy: uniform   # uniform / dense / random / stride

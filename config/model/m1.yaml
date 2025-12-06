@@ -1,0 +1,111 @@
+# ============================================================
+# Uni-SLM Model M1 (UDP Version)
+# ============================================================
+
+model:
+  hidden_dim: 512
+  proj_dim: 256
+
+# ------------------------------------------------------------
+# RGB Encoder
+# ------------------------------------------------------------
+rgb_encoder:
+  backbone:
+    name: "resnet3d-18"               # resnet3d / slowfast / swin3d / vit
+    output_dim: 512
+    path: null
+    freeze: false
+  proj:
+    type: "linear"
+    out_dim: 512
+    path: null
+    freeze: false
+  in_channels: 3
+  temporal_stride: 1
+
+# ------------------------------------------------------------
+# Pose Encoder
+# ------------------------------------------------------------
+pose_encoder:
+  # type: "transformer"
+  backbone:
+    name: "transformer"            # st-gcn
+    input_dim: 256
+    output_dim: 512
+    layers: 4
+    heads: 8
+    dropout: 0.1
+    path: null
+    freeze: false
+  proj:
+    type: "linear"
+    out_dim: 512
+    path: null
+    freeze: false
+
+# ------------------------------------------------------------
+# Text Encoder
+# ------------------------------------------------------------
+text_encoder:
+  # type: "hf"                     # huggingface
+  backbone:
+    name: "all-MiniLM-L6-v2"
+    output_dim: 384
+    path: null
+    freeze: false
+  proj:
+    type: "linear"
+    out_dim: 512
+    path: null
+    freeze: false
+
+# ------------------------------------------------------------
+# Fusion Module
+# ------------------------------------------------------------
+fusion:
+  type: "none"                  # none / concat / cross_attn
+  path: null
+  cross_attn:
+    layers: 2
+    heads: 8
+    hidden_dim: 512
+
+# ------------------------------------------------------------
+# Retrieval Head
+# ------------------------------------------------------------
+retrieval_head:
+  enable: true
+  rgb_in: 512
+  text_in: 512
+  proj_dim: 256
+  temperature: 0.07
+  learnable_tau: false
+  path: null
+
+# ------------------------------------------------------------
+# Recognition Head
+# ------------------------------------------------------------
+recognition_head:
+  enable: true
+  in_dim: 512
+  num_classes: 20000
+  hidden_dim: 512
+  num_layers: 2
+  dropout: 0.1
+  blank_id: 0
+  path: null
+
+# ------------------------------------------------------------
+# Translation Head
+# ------------------------------------------------------------
+translation_head:
+  enable: true
+  type: "mt5"
+  model_path: "google/mt5-base"
+  in_dim: 512
+  d_model: 768
+  max_target_len: 128
+  label_smoothing: 0.1
+  num_beams: 4
+  prompt: "Translate sign language video to Chinese:"
+  path: null
