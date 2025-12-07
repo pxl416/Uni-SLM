@@ -19,7 +19,7 @@ model: config/model/m1.yaml
 # Finetune Task
 Finetune:
   task: translation                 # retrieval / recognition / translation
-  train_split: train
+  train_split: val
   eval_split:  test
   amp: true
 
