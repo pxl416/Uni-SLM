@@ -1,4 +1,4 @@
-# finetune.py
+# finetuner.py
 # -*- coding: utf-8 -*-
 import os
 import logging
@@ -872,7 +872,7 @@ class FinetunerFactory:
         elif task == "recognition":
             return RecognitionFinetuner(cfg, device)
         else:
-            raise ValueError(f"Unknown finetune task: {task}")
+            raise ValueError(f"Unknown finetuner task: {task}")
 
 
 # =========================================================
@@ -919,7 +919,7 @@ def main():
 
                 wandb.init(
                     project=getattr(wandb_cfg, "project", "Uni-SLM"),
-                    name=getattr(wandb_cfg, "run_name", f"finetune-{getattr(cfg.Finetune, 'task', 'unknown')}"),
+                    name=getattr(wandb_cfg, "run_name", f"finetuner-{getattr(cfg.Finetune, 'task', 'unknown')}"),
                     config=raw_cfg,
                 )
 

@@ -14,11 +14,11 @@ datasets:
   BOBSL:     config/dataset/BOBSL.yaml
 
 # Model
-model: config/model/m1.yaml
+model: config/model/m2.yaml
 
 # Finetune Task
 Finetune:
-  task: translation                 # retrieval / recognition / translation
+  task: recognition                 # retrieval / recognition / translation
   train_split: val
   eval_split:  test
   amp: true
@@ -26,15 +26,15 @@ Finetune:
 # Evaluation Settings (pure evaluation)
 Evaluation:
   retrieval: false
-  recognition: false
+  recognition: true
   translation: false
 
 # Save & Logging
-save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetune
+save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetuner
 
 wandb:
   use: true
-  project: uni-slm-finetune
+  project: uni-slm-finetuner
   run_name: ft-translation-1208
 
 seed: 3407

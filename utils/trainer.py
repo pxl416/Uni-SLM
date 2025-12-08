@@ -8,7 +8,7 @@
 - 统一的优化器构建函数（head / backbone 不同 lr）
 - AMP 支持（GradScaler + autocast 上下文）
 
-可同时服务 finetune.py / pretrain.py / 其他训练脚本。
+可同时服务 finetuner.py / pretrain.py / 其他训练脚本。
 """
 
 import os
@@ -59,7 +59,7 @@ def _resolve_save_dir(cfg, default: str = "checkpoints") -> str:
       2) cfg.save_dir
       3) default
     """
-    # 针对 finetune/pretrain 任务的子配置
+    # 针对 finetuner/pretrain 任务的子配置
     for subkey in ["Finetune", "Pretrain", "Training"]:
         sub_cfg = getattr(cfg, subkey, None)
         if sub_cfg is not None and hasattr(sub_cfg, "save_dir"):

@@ -1,0 +1,132 @@
+# =========================================
+# Unified Multi-Modal Model Configuration
+# encoders = backbone + proj
+# fusion & codebook can be toggled
+# =========================================
+
+model:
+  hidden_dim: 512
+  use_fusion: false
+  use_codebook: false
+
+# --------------------------
+# RGB Encoder
+# --------------------------
+rgb_encoder:
+  backbone:
+    name: "resnet3d-18"
+    output_dim: 512
+    pretrained_path: null
+    freeze: false
+    lr_mult: 0.5
+
+  proj:
+    enabled: true
+    type: "linear"
+    pretrained_path: null
+    freeze: false
+    lr_mult: 1.0
+
+
+# --------------------------
+# Pose Encoder
+# --------------------------
+pose_encoder:
+  backbone:
+    name: "transformer"
+    output_dim: 512
+    pretrained_path: null
+    freeze: false
+    lr_mult: 0.5
+
+  proj:
+    enabled: true
+    type: "linear"
+    pretrained_path: null
+    freeze: false
+    lr_mult: 1.0
+
+
+# --------------------------
+# Text Encoder
+# --------------------------
+text_encoder:
+  backbone:
+    name: "sentence-transformers/all-MiniLM-L6-v2"
+    output_dim: 384
+    pretrained_path: null
+    freeze: false
+    lr_mult: 0.2
+
+  proj:
+    enabled: true
+    type: "linear"
+    pretrained_path: null
+    freeze: false
+    lr_mult: 1.0
+
+
+# --------------------------
+# Fusion Module
+# --------------------------
+fusion:
+  type: "none"
+  hidden_dim: 512
+  num_layers: 2
+  num_heads: 8
+  pretrained_path: null
+  freeze: false
+  lr_mult: 1.0
+
+
+# --------------------------
+# Optional VQ Codebook
+# --------------------------
+codebook:
+  enabled: false
+  num_codes: 2048
+  commitment_cost: 0.25
+  pretrained_path: null
+  freeze: false
+  lr_mult: 1.0
+
+
+# --------------------------
+# Retrieval Head
+# --------------------------
+retrieval_head:
+  proj_dim: 256
+  temperature: 0.07
+  learnable_tau: false
+  pretrained_path: null
+  freeze: false
+  lr_mult: 1.0
+
+
+# --------------------------
+# Recognition Head (CTC)
+# --------------------------
+recognition_head:
+  num_classes: 2000
+  hidden_dim: 512
+  num_layers: 2
+  dropout: 0.1
+  blank_id: 0
+  pretrained_path: null
+  freeze: false
+  lr_mult: 1.0
+
+
+# --------------------------
+# Translation Head (MT5)
+# --------------------------
+translation_head:
+  type: "mt5"
+  model_path: "google/mt5-base"
+  max_target_len: 128
+  label_smoothing: 0.1
+  num_beams: 4
+  prompt: "Translate sign language video to Chinese:"
+  pretrained_path: null
+  freeze: false
+  lr_mult: 0.2

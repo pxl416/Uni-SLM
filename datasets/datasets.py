@@ -238,7 +238,15 @@ class MultiDataset(Dataset):
 
 # create_dataloader
 def create_dataloader(args, cfg, phase="train"):
-    phase = phase.lower()
+    # phase = phase.lower()
+    alias = {
+        "val": "dev",      # HuggingFace-style
+        "valid": "dev",
+        "validation": "dev",
+    }
+    if phase in alias:
+        print(f"[Info] Phase '{phase}' mapped to '{alias[phase]}' (dataset compatibility)")
+        phase = alias[phase]
     ds_names = getattr(cfg, "active_datasets", ["CSL_Daily"])
     if len(ds_names) != 1:
         raise NotImplementedError("Only single dataset supported for now")

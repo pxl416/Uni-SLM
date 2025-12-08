@@ -87,7 +87,7 @@ def main():
 
     finetune_path = os.path.join(ROOT, "config/ft.yaml")
     check_file(finetune_path)
-    finetune_cfg = test_yaml_loading(finetune_path, "finetune.yaml")
+    finetune_cfg = test_yaml_loading(finetune_path, "finetuner.yaml")
 
     if finetune_cfg and hasattr(finetune_cfg, "model"):
         model_path = os.path.join(ROOT, finetune_cfg.model)
