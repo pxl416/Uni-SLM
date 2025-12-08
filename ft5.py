@@ -76,7 +76,7 @@ class RetrievalFinetuner:
     # ------------------------------
     def _build_dataloaders(self):
         """
-        使用 create_dataloader（与 test_dataloader.py 保持一致）
+        使用 create_dataloader（与 test_data_loading.py 保持一致）
         这里使用 self.batch_size / self.num_workers 由 init_trainer_common 注入
         """
         args = SimpleNamespace(

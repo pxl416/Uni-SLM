@@ -1,241 +1,286 @@
 # datasets/datasets.py
-# -*- coding: utf-8 -*-
 from __future__ import annotations
-
 import random
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, get_worker_info
+from torch.utils.data import Dataset, DataLoader
 from types import SimpleNamespace
+from utils.config import load_yaml, dict_to_ns
 
-
-# ===========================================================
-# 注册表：根据 datasets/xxx.py 里的类名来加载
-# ===========================================================
 DATASET_REGISTRY = {
     "CSL_Daily": "datasets.CSLDaily:CSLDailyDataset",
-    "CSL_News": "datasets.CSLNews:CSLNewsDataset",
 }
-print("[DEBUG] BaseDataset.collate_fn loaded.")
 
-# ===========================================================
-# 基础工具：统一 dummy tensor（防止 missing）
-# ===========================================================
-def dummy_rgb_tensor():
-    """返回一个 [1, 3, 224, 224] 的 dummy RGB clip"""
-    return torch.zeros((1, 3, 224, 224), dtype=torch.float32)
-
-def dummy_pose_tensor():
-    """返回一个 [1, 21, 3] 的 dummy pose"""
-    return torch.zeros((1, 21, 3), dtype=torch.float32)
+print("[DEBUG] datasets.py loaded.")
 
 
-# ===========================================================
-# BaseDataset —— Uni-SLM 所有数据集都必须继承
-# ===========================================================
+# dummy tensors
+def dummy_rgb_tensor(time_steps=1, channel=3):
+    return torch.zeros((time_steps, channel, 224, 224), dtype=torch.float32)
+
+def dummy_pose_tensor(time_steps=1):
+    return torch.zeros((time_steps, 21, 3), dtype=torch.float32)
+
+
+# padding
+def pad_sequence(seq_list, lengths):
+    if len(seq_list) == 0:
+        raise ValueError("pad_sequence: empty sequence list")
+    max_len = max(lengths)
+    B = len(seq_list)
+    example = seq_list[0]
+    out = torch.zeros((B, max_len, *example.shape[1:]),
+                      dtype=example.dtype, device=example.device)
+    for i, (seq, L) in enumerate(zip(seq_list, lengths)):
+        out[i, :L] = seq
+    return out
+
+
+def adjust_channel(x, out_c):
+    c = x.shape[1]
+    if c == out_c:
+        return x
+    if out_c == 1:
+        # RGB → 灰度
+        return x.mean(dim=1, keepdim=True)
+    if out_c == 3:
+        # 灰度 → RGB
+        return x.repeat(1, 3, 1, 1)
+    if out_c > c:
+        # 较少见，多通道拓展
+        return x.repeat(1, out_c // c, 1, 1)
+    raise ValueError(f"Unsupported channel mapping: {c} → {out_c}")
+
+
+import torch.nn.functional as F
+
+def to_tensor(img):
+    if isinstance(img, torch.Tensor):
+        return img
+    # PIL or numpy -> tensor
+    if hasattr(img, "mode"):
+        # PIL Image
+        img = torch.from_numpy(np.array(img))
+    else:
+        img = torch.tensor(img)
+    # shape (H,W,C) → (C,H,W)
+    if img.dim() == 3 and img.shape[-1] in [1,3]:
+        img = img.permute(2,0,1)
+    return img.float() / 255.0
+
+
+def resize_tensor(img, size):
+    # img: (C,H,W)
+    H, W = img.shape[1], img.shape[2]
+    return F.interpolate(img.unsqueeze(0), size=size, mode="bilinear", align_corners=False).squeeze(0)
+
+
+def adjust_channel(img, out_c):
+    c = img.shape[0]
+    if c == out_c:
+        return img
+    if out_c == 1:
+        return img.mean(dim=0, keepdim=True)
+    if out_c == 3 and c == 1:
+        return img.repeat(3, 1, 1)
+    if out_c > c:
+        return img.repeat(out_c // c, 1, 1)
+    raise ValueError(f"Unsupported channel conversion: {c} → {out_c}")
+
+
+
+
+# BaseDataset
 class BaseDataset(Dataset):
-    """
-    所有派生数据集必须实现 get_item_data(idx)，并返回：
-        name: str
-        pose_sample: dict     { "keypoints": Tensor or None }
-        text: str
-        support: dict         { "rgb_img": Tensor or None, "segments": dict }
-
-    collate_fn 将强制对所有模态进行统一 padding（raw tensor）
-    mask 不在这里创建（避免 shape mismatch），由下游模块构造。
-    """
-
     def __init__(self, args, cfg, phase: str):
         super().__init__()
         self.args = args
         self.cfg = cfg
         self.phase = phase.lower()
-
-        # 全局 hyper-params
-        self.max_length = int(getattr(args, "max_length", 128))
-        self.seed = int(getattr(args, "seed", getattr(cfg, "seed", 3407)))
-
-        # feature 开关（RGB / Pose / Text）
-        # 但即便关闭，也会创建 dummy entries，避免 KeyError
-        self.use_rgb = getattr(args, "rgb_support", True)
-        self.use_pose = getattr(args, "pose_support", True)
-
-        # 默认 transform，可以被子类覆盖
         self.transform_train = None
         self.transform_val = None
 
-    # -----------------------------------------------------
-    # 子类必须实现：返回四元组
-    # -----------------------------------------------------
     def get_item_data(self, idx):
         raise NotImplementedError
 
     def __getitem__(self, idx):
-        """
-        把派生类的 get_item_data 返回的四元组包装成统一格式的字典
-        """
         name, pose_sample, text, support = self.get_item_data(idx)
+
+        # pose
+        keypoints = pose_sample.get("keypoints", None)
+        if keypoints is None:
+            keypoints = dummy_pose_tensor()
+            has_pose = False
+        else:
+            has_pose = True
+
+        if keypoints.dim() == 2:
+            keypoints = keypoints.unsqueeze(0)
+        elif keypoints.dim() == 3 and keypoints.shape[-1] != 3:
+            if keypoints.shape[1] == 3:
+                keypoints = keypoints.permute(0, 2, 1)
+            else:
+                raise ValueError(f"Invalid keypoints shape: {keypoints.shape}")
+
+        # ===== RGB =====
+        rgb = support.get("rgb_img", None)
+        channel = getattr(self.cfg.global_data, "channel", 3)
+        resize_hw = getattr(self.cfg.global_data, "resize", [224, 224])
+
+        if rgb is None:
+            rgb = dummy_rgb_tensor(channel=channel)
+            has_rgb = False
+        else:
+            has_rgb = True
+            # rgb: (T,C,H,W)
+            # resize + channel adjust + normalize
+            frames = []
+            for frame in rgb:  # frame: (C,H,W)
+                C = frame.shape[0]
+                # channel adjust
+                if C != channel:
+                    if channel == 1:
+                        frame = frame.mean(dim=0, keepdim=True)
+                    elif channel == 3 and C == 1:
+                        frame = frame.repeat(3, 1, 1)
+                    else:
+                        raise ValueError(f"Unsupported channel mapping: {C}->{channel}")
+
+                # resize
+                frame = F.interpolate(
+                    frame.unsqueeze(0),
+                    size=resize_hw,
+                    mode="bilinear",
+                    align_corners=False
+                ).squeeze(0)
+
+                # normalize
+                if channel == 3:
+                    mean = torch.tensor([0.485, 0.456, 0.406], dtype=frame.dtype, device=frame.device)[:, None, None]
+                    std = torch.tensor([0.229, 0.224, 0.225], dtype=frame.dtype, device=frame.device)[:, None, None]
+                    frame = (frame - mean) / std
+                else:  # channel == 1
+                    mean = torch.tensor([0.5], dtype=frame.dtype, device=frame.device)[:, None, None]
+                    std = torch.tensor([0.5], dtype=frame.dtype, device=frame.device)[:, None, None]
+                    frame = (frame - mean) / std
+
+                frames.append(frame)
+
+            rgb = torch.stack(frames, dim=0)
+
+        gloss = support.get("gloss", [])
+        segments = support.get("segments", {"starts": [], "ends": [], "texts": []})
 
         return {
             "name": name,
-            "keypoints": pose_sample.get("keypoints", None),
             "text": text,
-            "gloss": support.get("gloss", []),  # ★ 支持 CSLR
-            "rgb_img": support.get("rgb_img", None),
-            "segments": support.get("segments", {"starts": [], "ends": [], "texts": []}),
+            "gloss": gloss,
+            "keypoints": keypoints,
+            "rgb_img": rgb,
+            "segments": segments,
+            "has_pose": has_pose,
+            "has_rgb": has_rgb,
         }
 
-    # -----------------------------------------------------
-    # worker-specific RNG
-    # -----------------------------------------------------
-    def _rng(self):
-        wi = get_worker_info()
-        wid = wi.id if wi else 0
-        return np.random.default_rng(self.seed + wid)
-
-    # -----------------------------------------------------
-    # collate_fn：真正的统一多模态 batch 组装器
-    # -----------------------------------------------------
     def collate_fn(self, batch):
-        """
-        batch: List[dict]
-        统一输出 src_input, tgt_input
-        """
+        B = len(batch)
 
-        name_list = []
-        rgb_list = []
-        rgb_len_list = []
-        pose_list = []
-        pose_len_list = []
-        text_list = []
-        gloss_list = []
-        segments_list = []
+        names = [item["name"] for item in batch]
+        texts = [item["text"] for item in batch]
+        gloss = [item["gloss"] for item in batch]
+        segments = [item["segments"] for item in batch]
 
-        for item in batch:
-            name_list.append(item["name"])
-            text_list.append(item["text"])
-            gloss_list.append(item["gloss"])
-            segments_list.append(item["segments"])
+        pose_list = [item["keypoints"] for item in batch]
+        pose_len = [x.shape[0] for x in pose_list]
 
-            # pose
-            kp = item["keypoints"]
-            if kp is None:
-                kp = dummy_pose_tensor()
-            pose_list.append(kp)
-            pose_len_list.append(kp.shape[0])
+        rgb_list = [item["rgb_img"] for item in batch]
+        rgb_len = [x.shape[0] for x in rgb_list]
 
-            # rgb
-            rgb = item["rgb_img"]
-            if rgb is None:
-                rgb = dummy_rgb_tensor()
-            rgb_list.append(rgb)
-            rgb_len_list.append(rgb.shape[0])
+        has_pose = torch.tensor([item["has_pose"] for item in batch], dtype=torch.bool)
+        has_rgb = torch.tensor([item["has_rgb"] for item in batch], dtype=torch.bool)
 
-        # pad pose
-        max_pose = max(pose_len_list)
-        pose_padded = [
-            torch.cat([p, p[-1:].expand(max_pose - L, *p.shape[1:])], 0)
-            if L < max_pose else p
-            for p, L in zip(pose_list, pose_len_list)
-        ]
-        pose_tensor = torch.stack(pose_padded, 0)
+        pose_tensor = pad_sequence(pose_list, pose_len)
+        rgb_tensor = pad_sequence(rgb_list, rgb_len)
 
-        # pad rgb
-        max_rgb = max(rgb_len_list)
-        rgb_padded = [
-            torch.cat([r, r[-1:].expand(max_rgb - L, *r.shape[1:])], 0)
-            if L < max_rgb else r
-            for r, L in zip(rgb_list, rgb_len_list)
-        ]
-        rgb_tensor = torch.stack(rgb_padded, 0)
+        pose_len_tensor = torch.tensor(pose_len, dtype=torch.long)
+        rgb_len_tensor = torch.tensor(rgb_len, dtype=torch.long)
 
-        # src_input = 模态数据
+        max_pose = pose_tensor.shape[1]
+        kp_mask = torch.arange(max_pose)[None, :].expand(B, -1) < pose_len_tensor[:, None]
+
+        max_rgb = rgb_tensor.shape[1]
+        rgb_mask = torch.arange(max_rgb)[None, :].expand(B, -1) < rgb_len_tensor[:, None]
+
         src_input = {
-            "name": name_list,
-
+            "name": names,
             "keypoints": pose_tensor,
-            "kp_len": torch.tensor(pose_len_list, dtype=torch.long),
-
+            "kp_len": pose_len_tensor,
+            "kp_mask": kp_mask,
+            "has_pose": has_pose,
             "rgb_img": rgb_tensor,
-            "rgb_len": torch.tensor(rgb_len_list, dtype=torch.long),
-
-            "segments": segments_list,
+            "rgb_len": rgb_len_tensor,
+            "rgb_mask": rgb_mask,
+            "has_rgb": has_rgb,
+            "segments": segments,
         }
 
-        # tgt_input = label
         tgt_input = {
-            "gt_sentence": text_list,
-            "gt_gloss": gloss_list,  # ★ 加上 gloss 标签（识别任务必需）
+            "gt_sentence": texts,
+            "gt_gloss": gloss,
         }
 
         return src_input, tgt_input
 
 
-# ===========================================================
-# MultiDataset —— 多数据集加权采样（已修复）
-# ===========================================================
 class MultiDataset(Dataset):
-    def __init__(self, datasets, weights=None):
-        self.datasets = datasets
-        self.lengths = [len(ds) for ds in datasets]
-
-        self.weights = np.array(weights if weights else [1.0] * len(datasets), dtype=np.float64)
-        self.weights /= self.weights.sum()
-        self.cum = np.cumsum(self.weights)
-
-    def __len__(self):
-        return max(self.lengths)
-
-    def _select_dataset(self):
-        r = random.random()
-        idx = int(np.searchsorted(self.cum, r))
-        return idx, self.datasets[idx]
-
-    def __getitem__(self, _):
-        idx, ds = self._select_dataset()
-        ridx = random.randint(0, self.lengths[idx] - 1)
-        return ds[ridx]
+    pass
 
 
-# ===========================================================
-# create_dataloader —— 全项目统一的数据入口
-# ===========================================================
-
+# create_dataloader
 def create_dataloader(args, cfg, phase="train"):
     phase = phase.lower()
-
     ds_names = getattr(cfg, "active_datasets", ["CSL_Daily"])
-    ds_weights = getattr(cfg, "active_weights", [1.0] * len(ds_names))
+    if len(ds_names) != 1:
+        raise NotImplementedError("Only single dataset supported for now")
 
-    ds_list = []
-    for name in ds_names:
-        if name not in DATASET_REGISTRY:
-            raise KeyError(f"未知数据集：{name}")
+    name = ds_names[0]
 
-        module_name, class_name = DATASET_REGISTRY[name].split(":")
+    if name not in DATASET_REGISTRY:
+        raise KeyError(f"Unknown dataset: {name}")
+
+    module_name, class_name = DATASET_REGISTRY[name].split(":")
+    try:
         module = __import__(module_name, fromlist=[class_name])
         ds_class = getattr(module, class_name)
+    except Exception as e:
+        raise ImportError(f"Dataset import failed: {module_name}:{class_name}\n{e}")
 
-        inst = ds_class(args=args, cfg=cfg, phase=phase)
-        ds_list.append(inst)
+    ds_paths_cfg = getattr(cfg, "datasets", None)
+    if ds_paths_cfg is None:
+        raise KeyError("cfg.datasets is empty")
 
-    # 单 dataset
-    if len(ds_list) == 1:
-        dataset = ds_list[0]
-        collate_fn = ds_list[0].collate_fn
-    else:
-        dataset = MultiDataset(ds_list, ds_weights)
-        collate_fn = ds_list[0].collate_fn  # 所有 dataset 都继承 BaseDataset → OK
+    ds_yaml_path = (
+        ds_paths_cfg[name]
+        if isinstance(ds_paths_cfg, dict)
+        else getattr(ds_paths_cfg, name)
+    )
+
+    raw_ds_cfg = load_yaml(ds_yaml_path)
+    ds_cfg = dict_to_ns(raw_ds_cfg)
+
+    global_data = getattr(cfg, "data", SimpleNamespace())
+    setattr(ds_cfg, "global_data", global_data)
+
+    dataset = ds_class(args=args, cfg=ds_cfg, phase=phase)
 
     train_cfg = getattr(cfg, "Training", SimpleNamespace())
     batch_size = getattr(train_cfg, "batch_size", 8)
     num_workers = getattr(train_cfg, "num_workers", 4)
 
-    # worker seed
     def _seed_worker(worker_id):
         seed = torch.initial_seed() % (2**32)
-        random.seed(seed)
         np.random.seed(seed)
+        random.seed(seed)
 
     generator = torch.Generator()
     generator.manual_seed(getattr(cfg, "seed", 3407))
@@ -247,9 +292,9 @@ def create_dataloader(args, cfg, phase="train"):
         num_workers=num_workers,
         pin_memory=True,
         drop_last=(phase == "train"),
-        collate_fn=collate_fn,
+        collate_fn=dataset.collate_fn,
         worker_init_fn=_seed_worker,
         generator=generator,
-        persistent_workers=(num_workers > 0),
+        persistent_workers=(num_workers > 0 and torch.cuda.is_available()),
         prefetch_factor=2 if num_workers > 0 else None,
     )

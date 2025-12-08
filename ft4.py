@@ -58,7 +58,7 @@ def set_seed(seed: int = 3407):
 
 
 def load_yaml(path):
-    """Load YAML exactly like test_dataloader.py"""
+    """Load YAML exactly like test_data_loading.py"""
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
@@ -135,7 +135,7 @@ class RetrievalFinetuner:
 
 
     # ------------------------------
-    # DataLoader (same pattern as test_dataloader.py)
+    # DataLoader (same pattern as test_data_loading.py)
     # ------------------------------
     def _build_dataloaders(self):
         args = SimpleNamespace(cfg=None)
@@ -678,7 +678,7 @@ class RecognitionFinetuner:
     # -----------------------------
     def _build_dataloaders(self):
         """
-        和 test_dataloader.py 一样，通过 create_dataloader(args, cfg, phase)
+        和 test_data_loading.py 一样，通过 create_dataloader(args, cfg, phase)
         这里的 args 只负责一些通用参数，不影响 Training.batch_size 等配置。
         """
         args = SimpleNamespace()  # 可以是空，它只在 BaseDataset 里读取少量可选字段

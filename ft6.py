@@ -59,7 +59,7 @@ def set_seed(seed: int = 3407):
 
 
 def load_yaml(path):
-    """Load YAML exactly like test_dataloader.py"""
+    """Load YAML exactly like test_data_loading.py"""
     with open(path, "r") as f:
         return yaml.safe_load(f)
 

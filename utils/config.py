@@ -216,3 +216,24 @@ def abs_path(root: str, p: str | None) -> str | None:
         return os.path.abspath(p_expanded)
     # 否则拼到 root 下
     return os.path.abspath(os.path.join(root, p_expanded))
+
+
+def dict_to_ns(d):
+    """Convert nested dict → SimpleNamespace recursively."""
+    if isinstance(d, dict):
+        return SimpleNamespace(**{k: dict_to_ns(v) for k, v in d.items()})
+    elif isinstance(d, list):
+        return [dict_to_ns(x) for x in d]
+    else:
+        return d
+
+
+def load_yaml_as_ns(path: str):
+    """Load YAML → SimpleNamespace."""
+    try:
+        with open(path, "r") as f:
+            raw = yaml.safe_load(f)
+        return dict_to_ns(raw)
+    except Exception as e:
+        print(f"Error loading YAML {path}: {e}")
+        return None
