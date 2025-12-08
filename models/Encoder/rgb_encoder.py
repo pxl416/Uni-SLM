@@ -9,7 +9,11 @@ from einops import rearrange
 class RGBEncoder(nn.Module):
     """
     RGB Encoder = backbone (3D CNN) + projection
-    Forward output: (B, T_out, hidden_dim)
+    Forward:
+        x: (B, T, C, H, W)
+        mask: optional, ignored for CNN models
+    Output:
+        (B, T_out, hidden_dim)
     """
 
     def __init__(self, cfg, hidden_dim):
@@ -20,6 +24,9 @@ class RGBEncoder(nn.Module):
 
         self.hidden_dim = hidden_dim
         self.backbone_dim = bb_cfg.output_dim
+
+        # CNN 不需要 mask
+        self.use_mask = False
 
         # ---------------------------------------------------------
         # Backbone (r3d_18)
@@ -79,7 +86,10 @@ class RGBEncoder(nn.Module):
                 p.requires_grad = False
 
     # ---------------------------------------------------------
-    def forward(self, x):
+    def forward(self, x, mask=None):
+        """
+        mask: optional, ignored for CNN backbone
+        """
         # x: (B, T, C, H, W)
         B, T, C, H, W = x.shape
         x = rearrange(x, "b t c h w -> b c t h w")

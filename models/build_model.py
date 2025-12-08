@@ -1,7 +1,116 @@
+# # models/build_model.py
+# import torch
+# import torch.nn as nn
+# from types import SimpleNamespace
+#
+# # Encoders
+# from models.Encoder.rgb_encoder import RGBEncoder
+# from models.Encoder.pose_encoder import PoseEncoder
+# from models.Encoder.text_encoder import TextEncoder
+#
+# # Heads
+# from models.Head.recognition import RecognitionHead
+# from models.Head.retrieval import RetrievalHead
+# from models.Head.translation import TranslationHead
+#
+#
+# # ===========================================================
+# # 判断是否需要 mask
+# # ===========================================================
+# def requires_mask(backbone_name: str):
+#     name = backbone_name.lower()
+#
+#     # CNN / 3D卷积 → 不需要 mask
+#     if any(x in name for x in ["i3d", "resnet3d", "r3d", "3d", "slowfast"]):
+#         return False
+#
+#     # Transformer 视频模型 → 需要 mask
+#     if any(x in name for x in ["vit", "transformer", "timesformer", "swin"]):
+#         return True
+#
+#     return False
+#
+#
+# # ===========================================================
+# # Encoders builder
+# # ===========================================================
+# def build_rgb_encoder(cfg, hidden_dim):
+#     enc = RGBEncoder(cfg, hidden_dim)
+#     enc.use_mask = requires_mask(cfg.backbone.name)
+#     return enc
+#
+#
+# def build_pose_encoder(cfg, hidden_dim):
+#     return PoseEncoder(cfg, hidden_dim)
+#
+#
+# def build_text_encoder(cfg, hidden_dim):
+#     return TextEncoder(cfg, hidden_dim)
+#
+#
+# # ===========================================================
+# # Multi-modal model container
+# # ===========================================================
+# class MultiModalModel(nn.Module):
+#
+#     def __init__(self, cfg):
+#         super().__init__()
+#
+#         self.cfg = cfg
+#         self.hidden_dim = cfg.model.hidden_dim
+#
+#         # ------------------------------
+#         # Encoders
+#         # ------------------------------
+#         self.rgb_encoder  = build_rgb_encoder(cfg.rgb_encoder,  self.hidden_dim)
+#         self.pose_encoder = build_pose_encoder(cfg.pose_encoder, self.hidden_dim)
+#         self.text_encoder = build_text_encoder(cfg.text_encoder, self.hidden_dim)
+#
+#         # ------------------------------
+#         # Heads
+#         # ------------------------------
+#         self.retrieval_head  = RetrievalHead(cfg.retrieval_head, self.hidden_dim)
+#         self.recognition_head = RecognitionHead(cfg.recognition_head, self.hidden_dim)
+#         self.translation_head = TranslationHead(cfg.translation_head, self.hidden_dim)
+#
+#     # ----------------------------------------------------------
+#     def forward(self, batch, task: str = None):
+#         if task is None:
+#             raise RuntimeError("❌ Must specify task='recognition'/'retrieval'/'translation'")
+#
+#         # ===============================
+#         # handle RGB encoder
+#         # ===============================
+#         if self.rgb_encoder.use_mask:
+#             video = self.rgb_encoder(batch["rgb_img"], batch["rgb_mask"])
+#         else:
+#             video = self.rgb_encoder(batch["rgb_img"])  # no mask
+#
+#         # ===============================
+#         # tasks
+#         # ===============================
+#         if task == "retrieval":
+#             text = self.text_encoder(batch["gt_sentence"])
+#             return self.retrieval_head(video, text)
+#
+#         elif task == "recognition":
+#             return self.recognition_head(video)
+#
+#         elif task == "translation":
+#             return self.translation_head(video, batch)
+#
+#         else:
+#             raise ValueError(f"Unknown task: {task}")
+#
+#
+# # ===============================================================
+# def build_model(cfg):
+#     return MultiModalModel(cfg)
+
+
 # models/build_model.py
 import torch
 import torch.nn as nn
-from types import SimpleNamespace
 
 # Encoders
 from models.Encoder.rgb_encoder import RGBEncoder
@@ -9,18 +118,35 @@ from models.Encoder.pose_encoder import PoseEncoder
 from models.Encoder.text_encoder import TextEncoder
 
 # Heads
-from models.Head.recognition import RecognitionHead
 from models.Head.retrieval import RetrievalHead
 from models.Head.translation import TranslationHead
+# RecognitionHead 不在构建阶段导入，由 RecognitionFinetuner 动态创建
 
 
+# ===========================================================
+# 判断是否需要 mask（用于 transformer 视频模型）
+# ===========================================================
+def requires_mask(backbone_name: str):
+    name = backbone_name.lower()
 
-# ===============================================================
-#   Build Functions
-# ===============================================================
+    # CNN / 3D卷积 → 不需要 mask
+    if any(x in name for x in ["i3d", "resnet3d", "r3d", "3d", "slowfast"]):
+        return False
 
+    # Transformer 视频模型 → 需要 mask
+    if any(x in name for x in ["vit", "transformer", "timesformer", "swin"]):
+        return True
+
+    return False
+
+
+# ===========================================================
+# Encoders builder
+# ===========================================================
 def build_rgb_encoder(cfg, hidden_dim):
-    return RGBEncoder(cfg, hidden_dim)
+    enc = RGBEncoder(cfg, hidden_dim)
+    enc.use_mask = requires_mask(cfg.backbone.name)
+    return enc
 
 
 def build_pose_encoder(cfg, hidden_dim):
@@ -31,11 +157,9 @@ def build_text_encoder(cfg, hidden_dim):
     return TextEncoder(cfg, hidden_dim)
 
 
-
-# ===============================================================
-#   Multi-modal model container
-# ===============================================================
-
+# ===========================================================
+# Multi-modal model container
+# ===========================================================
 class MultiModalModel(nn.Module):
 
     def __init__(self, cfg):
@@ -54,35 +178,50 @@ class MultiModalModel(nn.Module):
         # ------------------------------
         # Heads
         # ------------------------------
-        self.retrieval_head  = RetrievalHead(cfg.retrieval_head, self.hidden_dim)
-        self.recognition_head = RecognitionHead(cfg.recognition_head, self.hidden_dim)
+        self.retrieval_head = RetrievalHead(cfg.retrieval_head, self.hidden_dim)
+
+        # ❗ RecognitionHead 延迟初始化（由 RecognitionFinetuner 负责构建）
+        self.recognition_head = None
+
         self.translation_head = TranslationHead(cfg.translation_head, self.hidden_dim)
 
     # ----------------------------------------------------------
-    def forward(self, batch, task="retrieval"):
-        """
-        task = 'retrieval' | 'recognition' | 'translation'
-        """
-        rgb = batch["rgb_img"]
-        pose = batch["keypoints"]
-        text = batch["gt_sentence"]
+    def forward(self, batch, task: str = None):
+        if task is None:
+            raise RuntimeError("❌ Must specify task='recognition'/'retrieval'/'translation'")
 
-        rgb_feat  = self.rgb_encoder(rgb)
-        pose_feat = self.pose_encoder(pose)
-        text_feat = self.text_encoder(text)
+        # ===============================
+        # RGB Encoder (with or without mask)
+        # ===============================
+        if getattr(self.rgb_encoder, "use_mask", False):
+            video = self.rgb_encoder(batch["rgb_img"], batch.get("rgb_mask", None))
+        else:
+            video = self.rgb_encoder(batch["rgb_img"])
 
+        # ===============================
+        # Task branches
+        # ===============================
         if task == "retrieval":
-            return self.retrieval_head(rgb_feat, text_feat)
+            text = self.text_encoder(batch["gt_sentence"])
+            return self.retrieval_head(video, text)
 
-        if task == "recognition":
-            return self.recognition_head(rgb_feat)
+        elif task == "recognition":
+            if self.recognition_head is None:
+                raise RuntimeError(
+                    "RecognitionHead not initialized. "
+                    "Use RecognitionFinetuner to attach the head."
+                )
+            return self.recognition_head(video)
 
-        if task == "translation":
-            return self.translation_head(rgb_feat, batch)
+        elif task == "translation":
+            return self.translation_head(video, batch)
 
-        raise ValueError(f"Unknown task {task}")
+        else:
+            raise ValueError(f"Unknown task: {task}")
 
 
 # ===============================================================
 def build_model(cfg):
     return MultiModalModel(cfg)
+
+

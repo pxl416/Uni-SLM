@@ -5,39 +5,28 @@ import torch.nn as nn
 
 class RecognitionHead(nn.Module):
     """
-    CTC-style recognition head.
+    Simple CTC Recognition Head.
+
     Input:
-      - feat: (B, T, D)
+        video_feat: (B, T, D)
     Output:
-      - logits: (B, T, num_classes)
+        {"logits": (B, T, num_classes)}
     """
 
-    def __init__(self, cfg, hidden_dim: int):
+    def __init__(self, hidden_dim: int, num_classes: int, blank_id: int = 0):
         super().__init__()
 
-        self.num_classes = cfg.num_classes
-        self.blank_id = getattr(cfg, "blank_id", 0)
-        num_layers = getattr(cfg, "num_layers", 2)
-        dropout = getattr(cfg, "dropout", 0.1)
+        self.num_classes = num_classes
+        self.blank_id = blank_id
 
-        # BiLSTM over temporal features
-        self.rnn = nn.LSTM(
-            input_size=hidden_dim,
-            hidden_size=hidden_dim // 2,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0,
-            bidirectional=True,
-        )
+        # Linear classifier for each timestep
+        self.fc = nn.Linear(hidden_dim, num_classes)
 
-        # Linear to vocab (2 * hidden_dim//2 == hidden_dim)
-        self.classifier = nn.Linear(hidden_dim, self.num_classes)
-
-    def forward(self, feat: torch.Tensor):
+    def forward(self, video_feat):
         """
-        feat: (B, T, D)
-        return: logits (B, T, num_classes)
+        video_feat: (B, T, D)
+        return:
+            { "logits": (B, T, num_classes) }
         """
-        x, _ = self.rnn(feat)              # (B, T, D)
-        logits = self.classifier(x)        # (B, T, num_classes)
-        return logits
+        logits = self.fc(video_feat)  # (B, T, num_classes)
+        return {"logits": logits}

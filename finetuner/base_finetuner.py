@@ -1,7 +1,7 @@
 # finetuner/base_finetuner.py
 import os
 import torch
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
 
 from utils.optimizer import build_optimizer
 
@@ -10,8 +10,8 @@ class BaseFinetuner:
     """
     通用 Finetuner 基类，包括:
       - optimizer / scheduler / scaler 初始化
+      - use_amp 设置
       - checkpoint 读写
-      - 通用 train_epoch / eval_epoch 模板（子类可 override）
     """
 
     def __init__(self, cfg, model, device):
@@ -19,24 +19,49 @@ class BaseFinetuner:
         self.model = model.to(device)
         self.device = device
 
-        # ---- Training configs ----
-        self.max_epochs = cfg.Training.epochs
-        self.grad_clip = getattr(cfg.Training, "grad_clip", 1.0)
+        # -------------------------------
+        # Training configs
+        # -------------------------------
+        train_cfg = getattr(cfg, "Training", None)
+        if train_cfg is None:
+            raise ValueError("cfg.Training not found — 请在 YAML 中添加 Training 字段")
 
-        # ---- Optimizer & Scheduler ----
-        self.optimizer, self.scheduler = build_optimizer(model, cfg.Training)
+        self.max_epochs = getattr(train_cfg, "epochs", 1)
+        self.grad_clip = getattr(train_cfg, "grad_clip", 1.0)
 
-        # ---- AMP scaler ----
-        self.scaler = GradScaler(enabled=True)
+        # ⭐ AMP 开关 —— 现在 RecognitionFinetuner 就能使用 self.use_amp 了
+        finetune_cfg = getattr(cfg, "Finetune", None)
+        self.use_amp = getattr(finetune_cfg, "amp", True)
 
-        # ---- Checkpoints ----
+        # -------------------------------
+        # Optimizer & Scheduler
+        # -------------------------------
+        self.optimizer, self.scheduler = build_optimizer(model, train_cfg)
+
+        # -------------------------------
+        # AMP Scaler
+        # -------------------------------
+        self.scaler = GradScaler(enabled=self.use_amp)
+
+        # -------------------------------
+        # Checkpoints
+        # -------------------------------
         self.save_dir = cfg.save_dir
         os.makedirs(self.save_dir, exist_ok=True)
-        self.best_metric = -1e9  # e.g. for accuracy / WER(negative)
+        self.best_metric = -1e9
         self.global_step = 0
 
+    def _move_batch_to_device(self, batch):
+        out = {}
+        for k, v in batch.items():
+            if torch.is_tensor(v):
+                out[k] = v.to(self.device)
+            else:
+                out[k] = v
+        return out
+
     # ===============================================================
-    #               Checkpoint Save / Load
+    # Save / Load
     # ===============================================================
     def save_checkpoint(self, name):
         path = os.path.join(self.save_dir, name)
@@ -49,7 +74,6 @@ class BaseFinetuner:
         }, path)
         print(f"[Checkpoint] Saved: {path}")
 
-    # ===============================================================
     def load_checkpoint(self, path):
         ckpt = torch.load(path, map_location=self.device)
         self.model.load_state_dict(ckpt["model"], strict=False)
@@ -60,8 +84,6 @@ class BaseFinetuner:
         self.global_step = ckpt.get("global_step", 0)
         print(f"[Checkpoint] Loaded from {path}")
 
-    # ===============================================================
-    # 子类必须实现
     # ===============================================================
     def train_epoch(self, loader):
         raise NotImplementedError
