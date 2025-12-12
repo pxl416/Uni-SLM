@@ -7,7 +7,7 @@ dataset:
     text: true
 
   paths:
-    root: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512 # /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily
+    root: /bask/projects/j/jiaoj-multi-modal/PeixiLiu/SLdata/CSL-Daily
     rgb: sentence
     pose: null
     text: sentence_label/csl2020ct_v2.pkl

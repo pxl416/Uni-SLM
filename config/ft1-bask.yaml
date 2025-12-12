@@ -4,12 +4,12 @@ active_weights: [1.0]
 
 # Data Settings
 data:
-  resize: [112, 112]
+  resize: [224, 224]
   channel: 3  # 1 or 3
   mosaic: 1
 
 datasets:
-  CSL_Daily: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/dataset/CSL-Daily.yaml
+  CSL_Daily: /bask/projects/j/jiaoj-multi-modal/PeixiLiu/pxProj3_baseline/config/dataset/CSL-Daily.yaml
   CSL_News:  config/dataset/CSL-News.yaml
   BOBSL:     config/dataset/BOBSL.yaml
 
@@ -34,7 +34,7 @@ save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetuner
 
 wandb:
   use: true
-  project: unisle-fttest-12 # uni-slm-finetuner
-  run_name: ft-recognition-1208
+  project: uni-slm-finetuner
+  run_name: ft-translation-1208
 
 seed: 3407
