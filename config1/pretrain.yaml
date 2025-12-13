@@ -1,0 +1,87 @@
+# ---------- 顶层 ----------
+seed: 3407
+mode: "pretrain"
+active_datasets: [CSL_Daily]
+
+Saving:
+  split_modalities: true
+
+# ---------- 数据集配置 ----------
+datasets:
+  CSL_Daily:
+    root: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512
+    rgb_dir: sentence
+    sentence_label_dir: sentence_label
+    split_file: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/sentence_label/split_1_train.txt   # ← 相对 root
+
+    max_text_len: 128
+    use_rgb:  true
+    use_pose: false
+    use_text: true
+    token_level: char
+
+    temporal:
+      T: 32
+      ratio: 0.5
+      jitter: false
+      min_frames: 32
+      max_frames: 32
+      augment:
+        size: 224
+        channel: rgb
+        degrees: 0
+        translate: 0.0
+        scale: [1.0, 1.0]
+        shear: 0.0
+        hue: 0.0
+        saturation: 0.0
+        brightness: 0.0
+        contrast: 0.0
+      augment_val:
+        enable: false
+        size: 224
+        channel: rgb
+        gray_as_rgb: false
+        mean: [0.485, 0.456, 0.406]
+        std:  [0.229, 0.224, 0.225]
+
+
+# ---------- 编码器/训练设置 ----------
+Encoders:
+  # 如脚本会按 use_* 决定是否实例化，可以保留；否则删掉 pose 以免白建模
+  # pose: { name: "PoseEncoder", output_dim: 512 }
+  rgb:  { name: "RGBEncoder",  output_dim: 512 }
+  text: { name: "TextEncoder", model_path: "sentence-transformers/all-MiniLM-L6-v2", output_dim: 384 }
+
+Pretraining:
+  task: "contrastive"
+  loss: "infoNCE"
+  temperature: 0.07
+  projection_dim: 256
+  amp: true           # 混合精度
+  resume: "resume/pretrain_daily_1022"          # 预留断点恢复路径（留空也行）
+
+Fusion:
+  pose_rgb:  { enabled: false }
+  pose_text: { enabled: false }
+  rgb_text:  { enabled: false }
+
+Training:
+  epochs: 30
+  batch_size: 8
+  num_workers: 10  # 4
+  learning_rate: 1e-4
+  grad_clip: 1.0
+  log_every: 50       # 可选
+  save_every: 1       # 可选（按 epoch）
+
+optimizer:
+  type: "adam"
+  scheduler: "cosine"
+
+wandb:
+  use: true
+  run_name: pretrain_daily_1022_i3d_epoch30
+  project: Uni-slm
+
+save_dir: checkpoints/pretrain_daily_1022_i3d_epoch30

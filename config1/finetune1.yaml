@@ -1,0 +1,144 @@
+# ================  Datasets Config  ===================
+
+active_datasets: ["CSL_Daily"]
+# active_weights: [1.0, 0.5]  # 如需多数据集时可恢复
+
+
+datasets:
+  CSL_Daily:
+    modalities:
+      rgb: true
+      pose: false
+      text: true
+
+    paths:
+      root: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily # /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512
+      rgb: sentence
+      pose: None
+      text: sentence_label/csl2020ct_v2.pkl
+      segments: sentence_label/video_map.txt
+      gloss_map: sentence_label/gloss_map.txt
+
+    splits:
+      train: sentence_label/split_1_train.txt # /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/sentence_label/split_1_train.txt # sentence_label/split_1_train.txt
+      dev: sentence_label/split_1_dev.txt # /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/sentence_label/split_1_dev.txt # sentence_label/split_1_dev.txt
+      test: sentence_label/split_1_test.txt # /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512/sentence_label/split_1_test.txt # sentence_label/split_1_test.txt
+
+    temporal:
+      T: 32
+      jitter: false
+      min_frames: 1
+      max_frames: 32 # GPU不够大不要用128
+
+
+  CSL_News:
+    modalities:
+      rgb: true
+      pose: true
+      text: true
+
+    paths:
+      root: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_News
+      rgb: rgb
+      pose: pose
+      text: ./
+      segments: null
+
+    splits:
+      train: train_label.json
+      val:   val_label.json
+      test:  test_label.json
+
+    temporal:
+      T: 32
+      jitter: false
+      min_frames: 1
+      max_frames: 256
+
+# ================  Encoders Config  ====================
+
+Encoders:
+  rgb:
+    output_dim: 512
+  pose:
+    output_dim: 256     # 如不用 pose，无影响
+  text:
+    output_dim: 384
+
+# ================  Training Generic  ===================
+
+Training:
+  batch_size: 2
+  num_workers: 2
+  epochs: 5
+
+  # finetuner 用 lr_head / lr_backbone，更统一
+  lr_head: 3e-4
+  lr_backbone: 5e-5
+
+  grad_clip: 1.0
+
+# ================  Finetune Control  ===================
+
+Finetune:
+  task: retrieval      # retrieval / recognition / translation
+  train_split: val
+  eval_split:  test
+  amp: true                # 混合精度
+  freeze: []               # ["rgb", "text"]
+
+  weights:
+    rgb_path: null
+    pose_path: null
+    text_path: null
+    proj_rgb_path: null
+    proj_text_path: null
+
+# ================  Evaluation Config  ==================
+
+Evaluation:
+  retrieval:
+    mode: false
+    rgb_in: 512
+    text_in: 384
+    proj_dim: 256
+    temperature: 0.07
+
+  recognition:
+    mode: false
+    in_dim: 512
+    num_classes: 20000
+    hidden_dim: 512
+    num_layers: 2
+    dropout: 0.1
+    blank_id: 0
+
+  translation:
+    mode: true
+    model_type: mt5
+    model_path: google/mt5-base
+    tokenizer_path: google/mt5-base
+    in_dim: 512
+    d_model: 768
+    max_video_len: 256
+    prompt: "Translate sign language video to Chinese:"
+    lang: zh
+    label_smoothing: 0.1
+    max_target_len: 128
+    max_new_tokens: 64
+    num_beams: 4
+    encode_mode: encoder_outputs     # 或 inputs_embeds
+
+
+
+# ======================================================
+# ================  Save & W&B Config  ==================
+# ======================================================
+
+seed: 3407
+save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetuner
+
+wandb:
+  use: true
+  project: uni-slm-finetuner
+  run_name: ft-retrieval-1204
