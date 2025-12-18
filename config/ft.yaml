@@ -18,7 +18,7 @@ model: config/model/m2.yaml
 
 # Finetune Task
 Finetune:
-  task: recognition                 # retrieval / recognition / translation
+  task: translation                 # retrieval / recognition / translation
   train_split: val
   eval_split:  test
   amp: true
@@ -35,6 +35,6 @@ save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetuner/translatio
 wandb:
   use: true
   project: unisle-fttest-12 # uni-slm-finetuner
-  run_name: ft-translation-1217
+  run_name: ft-translation-1218
 
 seed: 3407

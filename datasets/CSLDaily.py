@@ -20,6 +20,7 @@ class CSLDailyDataset(BaseDataset):
     def __init__(self, args, cfg, phase="train"):
         super().__init__(args, cfg, phase)
 
+        self.language = "zh"
         self.ds_cfg = cfg.dataset
         self.aug_cfg = getattr(cfg, "augment", None)
         self.global_data = getattr(cfg, "global_data", None)

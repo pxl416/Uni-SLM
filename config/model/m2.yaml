@@ -94,11 +94,12 @@ recognition_head:
 # Translation Head (MT5)
 translation_head:
   type: "mt5"
-  model_path: "google/mt5-base"
+  base_model: "google/mt5-base"
+  resume_path: null
+  freeze: false
+  lr_mult: 0.2
   max_target_len: 128
   label_smoothing: 0.1
   num_beams: 4
   prompt: "Translate sign language video to Chinese:"
-  pretrained_path: null
-  freeze: false
-  lr_mult: 0.2
+

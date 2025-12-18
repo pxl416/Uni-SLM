@@ -42,7 +42,6 @@ class TranslationHead(nn.Module):
 
         self.max_target_len = getattr(cfg, "max_target_len", 128)
         self.num_beams = getattr(cfg, "num_beams", 4)
-        self.prompt = getattr(cfg, "prompt", "Translate sign language video to Chinese:")
 
     def forward(self, rgb_feat: torch.Tensor, batch: dict, mode: str = "train"):
         """
@@ -75,7 +74,7 @@ class TranslationHead(nn.Module):
 
             outputs = self.mt5(
                 encoder_outputs=encoder_outputs,
-                labels=labels,
+                labels=labels,   # ✅ 正确：teacher forcing
             )
 
             return {
@@ -85,16 +84,8 @@ class TranslationHead(nn.Module):
 
         # ================= EVAL / GENERATION =================
         elif mode == "eval":
-            prompt_tokens = self.tokenizer(
-                [self.prompt] * B,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-            ).to(device)
-
             outputs = self.mt5.generate(
                 encoder_outputs=encoder_outputs,
-                decoder_input_ids=prompt_tokens.input_ids,
                 max_length=self.max_target_len,
                 num_beams=self.num_beams,
             )
