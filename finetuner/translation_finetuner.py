@@ -67,7 +67,7 @@ class TranslationFinetuner(BaseFinetuner):
     def save_pretrained_submodules(self, tag: str):
         base = f"checkpoints/pretrained/{tag}"
 
-        os.makedirs("checkpoints/translation", exist_ok=True)
+        os.makedirs("checkpoints/pretrained", exist_ok=True)
 
         # RGB encoder
         torch.save(
@@ -244,9 +244,7 @@ class TranslationFinetuner(BaseFinetuner):
 
         avg_loss = total_loss / len(loader)
 
-        # =========================
         # Language-aware evaluation
-        # =========================
         bleu_score = 0.0
         r1 = r2 = rL = 0.0
 
@@ -282,15 +280,13 @@ class TranslationFinetuner(BaseFinetuner):
 
             print(
                 f"[Eval] Translation samples: {n} | "
-                f"BLEU={bleu_score:.2f} | "
-                f"ROUGE-1={r1:.4f} ROUGE-2={r2:.4f} ROUGE-L={rL:.4f}"
+                f"BLEU↑={bleu_score:.2f} | "
+                f"ROUGE-1↑={r1:.4f} ROUGE-2↑={r2:.4f} ROUGE-L↑={rL:.4f}"
             )
         else:
             print("[Eval] No valid translation pairs, skip metrics.")
 
-        # =========================
         # Random qualitative sample
-        # =========================
         idx = random.randrange(len(all_gts))
 
         sample_gt = all_gts[idx]
