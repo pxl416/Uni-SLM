@@ -27,14 +27,14 @@ Finetune:
 Evaluation:
   retrieval: false
   recognition: true
-  translation: false
+  translation: true
 
 # Save & Logging
-save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetuner
+save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/finetuner/translation
 
 wandb:
   use: true
   project: unisle-fttest-12 # uni-slm-finetuner
-  run_name: ft-recognition-1208
+  run_name: ft-translation-1217
 
 seed: 3407

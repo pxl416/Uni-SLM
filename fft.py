@@ -1,4 +1,4 @@
-# fft.py (finetune.py)
+# finetune.py
 import argparse
 import torch
 import os
@@ -10,7 +10,7 @@ from models.build_model import build_model
 
 from finetuner.recognition_finetuner import RecognitionFinetuner
 #from finetuner.retrieval_finetuner import RetrievalFinetuner
-#from finetuner.translation_finetuner import TranslationFinetuner
+from finetuner.translation_finetuner import TranslationFinetuner
 
 try:
     import wandb
@@ -22,7 +22,7 @@ except:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config/ft.yaml")
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--device", type=str, default="0")
     return parser.parse_args()
@@ -74,10 +74,14 @@ def main():
             device=cfg.device
         )
 
-    # elif task == "retrieval":
-    #     finetuner = RetrievalFinetuner(cfg, model, device)
-    # elif task == "translation":
-    #     finetuner = TranslationFinetuner(cfg, model, device)
+    elif task == "translation":
+        finetuner = TranslationFinetuner(
+            cfg=cfg,
+            model=model,
+            dataset=train_loader.dataset,
+            device=cfg.device
+        )
+
     else:
         raise ValueError(f"Unknown finetune task: {task}")
 

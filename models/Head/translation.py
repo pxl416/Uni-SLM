@@ -1,4 +1,5 @@
 # models/Head/translation.py
+
 import torch
 import torch.nn as nn
 from transformers.modeling_outputs import BaseModelOutput
@@ -6,9 +7,12 @@ from transformers.modeling_outputs import BaseModelOutput
 
 class TranslationHead(nn.Module):
     """
-    Translation head using MT5. Minimal but correct bridging:
-    video_feat -> mapped to d_model -> used as encoder hidden states
+    Translation head using MT5.
+    Supports:
+      - mode="train": teacher-forcing, return loss
+      - mode="eval": generation, return pred_text
     """
+
     def __init__(self, cfg, hidden_dim: int):
         super().__init__()
 
@@ -16,7 +20,6 @@ class TranslationHead(nn.Module):
         self.hidden_dim = hidden_dim
         model_path = getattr(cfg, "model_path", "google/mt5-base")
 
-        # Try loading MT5
         try:
             from transformers import MT5ForConditionalGeneration, T5Tokenizer
 
@@ -24,14 +27,12 @@ class TranslationHead(nn.Module):
             self.mt5 = MT5ForConditionalGeneration.from_pretrained(model_path)
             self.d_model = self.mt5.config.d_model
 
-            # Map video feat -> MT5 encoder dim
             self.video_proj = nn.Linear(hidden_dim, self.d_model)
-
             self.use_mt5 = True
+
             print(f"[Info] TranslationHead: MT5 loaded from {model_path}")
 
         except Exception as e:
-            # dummy fallback
             self.mt5 = None
             self.tokenizer = None
             self.video_proj = nn.Linear(hidden_dim, hidden_dim)
@@ -43,45 +44,71 @@ class TranslationHead(nn.Module):
         self.num_beams = getattr(cfg, "num_beams", 4)
         self.prompt = getattr(cfg, "prompt", "Translate sign language video to Chinese:")
 
-    def forward(self, rgb_feat: torch.Tensor, batch: dict):
+    def forward(self, rgb_feat: torch.Tensor, batch: dict, mode: str = "train"):
         """
         rgb_feat: (B, T, D)
+        batch:
+          - train: must contain text_input_ids
         """
 
-        # -------- Dummy fallback ----------
+        # ---------- Dummy fallback ----------
         if not self.use_mt5:
             pooled = rgb_feat.mean(dim=1)
-            return {"video_repr": self.video_proj(pooled), "mt5_used": False}
+            return {
+                "video_repr": self.video_proj(pooled),
+                "mt5_used": False
+            }
 
-        B, T, D = rgb_feat.shape
         device = rgb_feat.device
+        B, T, D = rgb_feat.shape
 
-        # -------- 1) Project video features to MT5 encoder dimension ----------
+        # 1) Project video features
         video_enc = self.video_proj(rgb_feat)  # (B, T, d_model)
-
-        # -------- 2) Use prompt as decoder input ----------
-        prompt_tokens = self.tokenizer(
-            [self.prompt] * B,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-        ).to(device)
-
-        # -------- 3) Build BaseModelOutput for MT5 encoder ----------
         encoder_outputs = BaseModelOutput(last_hidden_state=video_enc)
 
-        # -------- 4) Run generation ----------
-        outputs = self.mt5.generate(
-            encoder_outputs=encoder_outputs,
-            max_length=self.max_target_len,
-            num_beams=self.num_beams,
-            decoder_input_ids=prompt_tokens.input_ids,
-        )
+        # ================= TRAIN =================
+        if mode == "train":
+            if "text_input_ids" not in batch:
+                raise ValueError("batch must contain 'text_input_ids' for translation training")
 
-        decoded = self.tokenizer.batch_decode(
-            outputs,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True,
-        )
+            labels = batch["text_input_ids"].to(device)
 
-        return {"pred_text": decoded, "mt5_used": True}
+            outputs = self.mt5(
+                encoder_outputs=encoder_outputs,
+                labels=labels,
+            )
+
+            return {
+                "loss": outputs.loss,
+                "mt5_used": True
+            }
+
+        # ================= EVAL / GENERATION =================
+        elif mode == "eval":
+            prompt_tokens = self.tokenizer(
+                [self.prompt] * B,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            ).to(device)
+
+            outputs = self.mt5.generate(
+                encoder_outputs=encoder_outputs,
+                decoder_input_ids=prompt_tokens.input_ids,
+                max_length=self.max_target_len,
+                num_beams=self.num_beams,
+            )
+
+            decoded = self.tokenizer.batch_decode(
+                outputs,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True,
+            )
+
+            return {
+                "pred_text": decoded,
+                "mt5_used": True
+            }
+
+        else:
+            raise ValueError(f"Unknown mode: {mode}")

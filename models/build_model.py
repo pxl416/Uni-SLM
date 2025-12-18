@@ -123,9 +123,7 @@ from models.Head.translation import TranslationHead
 # RecognitionHead 不在构建阶段导入，由 RecognitionFinetuner 动态创建
 
 
-# ===========================================================
 # 判断是否需要 mask（用于 transformer 视频模型）
-# ===========================================================
 def requires_mask(backbone_name: str):
     name = backbone_name.lower()
 
@@ -140,9 +138,7 @@ def requires_mask(backbone_name: str):
     return False
 
 
-# ===========================================================
 # Encoders builder
-# ===========================================================
 def build_rgb_encoder(cfg, hidden_dim):
     enc = RGBEncoder(cfg, hidden_dim)
     enc.use_mask = requires_mask(cfg.backbone.name)
@@ -157,9 +153,7 @@ def build_text_encoder(cfg, hidden_dim):
     return TextEncoder(cfg, hidden_dim)
 
 
-# ===========================================================
 # Multi-modal model container
-# ===========================================================
 class MultiModalModel(nn.Module):
 
     def __init__(self, cfg):
@@ -168,16 +162,12 @@ class MultiModalModel(nn.Module):
         self.cfg = cfg
         self.hidden_dim = cfg.model.hidden_dim
 
-        # ------------------------------
         # Encoders
-        # ------------------------------
         self.rgb_encoder  = build_rgb_encoder(cfg.rgb_encoder,  self.hidden_dim)
         self.pose_encoder = build_pose_encoder(cfg.pose_encoder, self.hidden_dim)
         self.text_encoder = build_text_encoder(cfg.text_encoder, self.hidden_dim)
 
-        # ------------------------------
         # Heads
-        # ------------------------------
         self.retrieval_head = RetrievalHead(cfg.retrieval_head, self.hidden_dim)
 
         # ❗ RecognitionHead 延迟初始化（由 RecognitionFinetuner 负责构建）
@@ -190,17 +180,13 @@ class MultiModalModel(nn.Module):
         if task is None:
             raise RuntimeError("❌ Must specify task='recognition'/'retrieval'/'translation'")
 
-        # ===============================
         # RGB Encoder (with or without mask)
-        # ===============================
         if getattr(self.rgb_encoder, "use_mask", False):
             video = self.rgb_encoder(batch["rgb_img"], batch.get("rgb_mask", None))
         else:
             video = self.rgb_encoder(batch["rgb_img"])
 
-        # ===============================
         # Task branches
-        # ===============================
         if task == "retrieval":
             text = self.text_encoder(batch["gt_sentence"])
             return self.retrieval_head(video, text)
@@ -213,8 +199,13 @@ class MultiModalModel(nn.Module):
                 )
             return self.recognition_head(video)
 
+        # elif task == "translation":
+        #     return self.translation_head(video, batch)
         elif task == "translation":
-            return self.translation_head(video, batch)
+            return {
+                "rgb_feat": video
+            }
+
 
         else:
             raise ValueError(f"Unknown task: {task}")

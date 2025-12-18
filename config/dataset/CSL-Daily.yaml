@@ -8,6 +8,7 @@ dataset:
 
   paths:
     root: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512 # /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily
+#    root: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/data/mini_CSL_Daily
     rgb: sentence
     pose: null
     text: sentence_label/csl2020ct_v2.pkl
