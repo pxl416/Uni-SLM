@@ -9,6 +9,7 @@ from models.build_model import build_model
 
 from finetuner.recognition_finetuner import RecognitionFinetuner
 from finetuner.translation_finetuner import TranslationFinetuner
+from finetuner.retrieval_finetuner import RetrievalFinetuner
 
 try:
     import wandb
@@ -20,7 +21,7 @@ except:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config/ft.yaml")
-    parser.add_argument("--epochs", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=35)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--device", type=str, default="0")
     return parser.parse_args()
@@ -80,13 +81,12 @@ def main():
         )
 
     elif task == "retrieval":
-        finetuner = RecognitionFinetuner(
+        finetuner = RetrievalFinetuner(
             cfg=cfg,
             model=model,
             dataset=train_loader.dataset,
             device=device
         )
-
 
     else:
         raise ValueError(f"Unknown finetune task: {task}")
@@ -98,25 +98,42 @@ def main():
 
     # ===== TRAIN LOOP =====
     for epoch in range(cfg.Training.epochs):
-        print(f"\n===== Epoch {epoch+1}/{cfg.Training.epochs} =====")
+        print(f"\n===== Epoch {epoch + 1}/{cfg.Training.epochs} | task={task} =====")
 
-        train_loss = finetuner.train_epoch(train_loader)
-        eval_loss = finetuner.eval_epoch(eval_loader)
+        train_out = finetuner.train_epoch(train_loader)
+        eval_out = finetuner.eval_epoch(eval_loader)
 
-        print(
-            f"[Epoch {epoch+1}] "
-            f"train_loss={train_loss:.4f} | "
-            f"eval_loss={eval_loss:.4f}"
-        )
+        if task in ["recognition", "translation"]:
+            # === legacy behavior (unchanged) ===
+            train_loss = train_out
+            eval_loss = eval_out
 
-        if WANDB_AVAILABLE and getattr(cfg, "wandb", None) and cfg.wandb.use:
-            wandb.log({
-                "train/loss": train_loss,
-                "eval/loss": eval_loss
-            })
+            print(
+                f"[Epoch {epoch + 1}] "
+                f"train_loss={train_loss:.4f} | "
+                f"eval_loss={eval_loss:.4f}"
+            )
 
-        # ⭐️⭐️⭐️ 唯一正确的保存方式 ⭐️⭐️⭐️
-        finetuner.save_if_best(eval_loss, epoch + 1)
+            if WANDB_AVAILABLE and getattr(cfg, "wandb", None) and cfg.wandb.use:
+                wandb.log({
+                    "train/loss": train_loss,
+                    "eval/loss": eval_loss
+                })
+
+            finetuner.save_if_best(eval_loss, epoch + 1)
+
+        elif task == "retrieval":
+            # === retrieval uses metrics dict ===
+            print(f"[Epoch {epoch + 1}] Train metrics: {train_out}")
+            print(f"[Epoch {epoch + 1}] Eval  metrics: {eval_out}")
+
+            if WANDB_AVAILABLE and getattr(cfg, "wandb", None) and cfg.wandb.use:
+                wandb.log({
+                    **{f"train/{k}": v for k, v in train_out.items()},
+                    **{f"eval/{k}": v for k, v in eval_out.items()},
+                })
+
+            finetuner.save_if_best(eval_out, epoch + 1)
 
 
 if __name__ == "__main__":

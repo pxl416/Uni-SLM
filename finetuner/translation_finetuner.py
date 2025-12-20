@@ -296,9 +296,7 @@ class TranslationFinetuner(BaseFinetuner):
         print("GT  :", sample_gt)
         print("PRED:", sample_pred)
 
-        # =========================
         # WandB logging (if enabled)
-        # =========================
         if hasattr(self, "cfg") and getattr(self.cfg, "wandb", None):
             try:
                 import wandb

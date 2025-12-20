@@ -36,7 +36,6 @@ def compute_cer(pred_list, gt_list):
 
 
 class RecognitionFinetuner(BaseFinetuner):
-
     def __init__(self, cfg, model, dataset, device):
         """
         model 允许为 None：未来可以让 Finetuner 自己 build_model
@@ -63,9 +62,7 @@ class RecognitionFinetuner(BaseFinetuner):
         vocab_size = len(self.gloss2id) + 1  # UNK
         blank_id = 0
         self.unk_id = vocab_size - 1
-
         print(f"[Info] Recognition vocab_size={vocab_size}, blank={blank_id}, unk={self.unk_id}")
-
         # 反向词表（只建一次）
         self.inv_vocab = {v: k for k, v in self.gloss2id.items()}
 
@@ -75,7 +72,6 @@ class RecognitionFinetuner(BaseFinetuner):
             num_classes=vocab_size,
             blank_id=blank_id
         ).to(device)
-
         self.blank_id = blank_id
         self.vocab_size = vocab_size
 
@@ -83,18 +79,12 @@ class RecognitionFinetuner(BaseFinetuner):
         train_cfg = getattr(cfg, "Training", None)
         if train_cfg is None:
             raise ValueError("cfg.Training not found")
-
         self.optimizer, self.scheduler = build_optimizer(self.model, train_cfg)
-
         # Loss
         self.criterion = nn.CTCLoss(blank=self.blank_id, zero_infinity=True)
-
         self.grad_clip = getattr(train_cfg, "grad_clip", 1.0)
-
         # Track best
         self.best_eval_loss = float("inf")
-
-
 
     # (2) Save best checkpoint
     def save_if_best(self, eval_loss, epoch):
@@ -103,7 +93,6 @@ class RecognitionFinetuner(BaseFinetuner):
             filename = f"best_epoch_{epoch}.pt"
             self.save_checkpoint(filename)
             print(f"[Checkpoint] Saved best model → {filename}")
-
 
     #                 TRAIN LOOP
     def train_epoch(self, loader):
@@ -167,9 +156,7 @@ class RecognitionFinetuner(BaseFinetuner):
     def eval_epoch(self, loader):
         self.model.eval()
         total_loss = 0.0
-
         pred_all, gt_all = [], []
-
         pbar = tqdm(loader, desc="Eval", ncols=100)
 
         with torch.no_grad():
@@ -221,7 +208,6 @@ class RecognitionFinetuner(BaseFinetuner):
 
         return total_loss / len(loader)
 
-
     # CTC target preparation
     def _prepare_gloss(self, gloss_list):
         ids_list = []
@@ -237,8 +223,4 @@ class RecognitionFinetuner(BaseFinetuner):
             len_list.append(len(ids))
 
         return torch.cat(ids_list, dim=0), torch.tensor(len_list, dtype=torch.long)
-
-
-
-
 
