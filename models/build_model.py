@@ -10,7 +10,7 @@ from models.Encoder.text_encoder import TextEncoder
 # Heads
 from models.Head.retrieval import RetrievalHead
 from models.Head.translation import TranslationHead
-# RecognitionHead 不在构建阶段导入，由 RecognitionFinetuner 动态创建
+from models.Head.recognition import RecognitionHead
 
 
 def load_pretrained_submodule(submodule, path: str, strict: bool = False):
@@ -20,7 +20,6 @@ def load_pretrained_submodule(submodule, path: str, strict: bool = False):
     """
     if path is None:
         return
-
     state = torch.load(path, map_location="cpu")
     missing, unexpected = submodule.load_state_dict(state, strict=strict)
 
@@ -33,15 +32,12 @@ def load_pretrained_submodule(submodule, path: str, strict: bool = False):
 # 判断是否需要 mask（用于 transformer 视频模型）
 def requires_mask(backbone_name: str):
     name = backbone_name.lower()
-
     # CNN / 3D卷积 → 不需要 mask
     if any(x in name for x in ["i3d", "resnet3d", "r3d", "3d", "slowfast"]):
         return False
-
     # Transformer 视频模型 → 需要 mask
     if any(x in name for x in ["vit", "transformer", "timesformer", "swin"]):
         return True
-
     return False
 
 
@@ -119,8 +115,6 @@ class MultiModalModel(nn.Module):
 
 
 # ===============================================================
-# def build_model(cfg):
-#     return MultiModalModel(cfg)
 
 def build_model(cfg):
     model = MultiModalModel(cfg)
