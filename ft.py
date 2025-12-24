@@ -21,7 +21,7 @@ except:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config/ft.yaml")
-    parser.add_argument("--epochs", type=int, default=35)
+    parser.add_argument("--epochs", type=int, default=45)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--device", type=str, default="0")
     return parser.parse_args()
