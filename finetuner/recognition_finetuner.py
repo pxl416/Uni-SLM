@@ -489,9 +489,14 @@ class RecognitionFinetuner(BaseFinetuner):
     def save_if_best(self, eval_loss, epoch):
         if eval_loss < self.best_eval_loss:
             self.best_eval_loss = eval_loss
-            filename = f"best_epoch_{epoch}.pt"
-            self.save_checkpoint(filename)
-            print(f"[Checkpoint] Saved best model → {filename}")
+            tag = f"recog_best_epoch_{epoch}"
+
+            # 1) 完整 checkpoint（用于 resume）
+            self.save_checkpoint(tag + ".pt")
+            print(f"[Checkpoint] Saved full model → {tag}.pt")
+
+            # 2) 子模块权重（用于复用）
+            self.save_pretrained_submodules(tag=tag)
 
     def save_pretrained_submodules(self, tag: str):
         """
