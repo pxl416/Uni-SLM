@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from types import SimpleNamespace
 from utils.config import load_yaml, dict_to_ns
@@ -35,24 +36,6 @@ def pad_sequence(seq_list, lengths):
         out[i, :L] = seq
     return out
 
-
-# def adjust_channel(x, out_c):
-#     c = x.shape[1]
-#     if c == out_c:
-#         return x
-#     if out_c == 1:
-#         # RGB → 灰度
-#         return x.mean(dim=1, keepdim=True)
-#     if out_c == 3:
-#         # 灰度 → RGB
-#         return x.repeat(1, 3, 1, 1)
-#     if out_c > c:
-#         # 较少见，多通道拓展
-#         return x.repeat(1, out_c // c, 1, 1)
-#     raise ValueError(f"Unsupported channel mapping: {c} → {out_c}")
-
-
-import torch.nn.functional as F
 
 def to_tensor(img):
     if isinstance(img, torch.Tensor):
