@@ -55,6 +55,6 @@ augment:
 
   temporal:
     min_frames: 1
-    max_frames: 32
+    max_frames: 128  # 16, 64, 8, 128
     jitter: false
     strategy: uniform   # uniform / dense / random / stride

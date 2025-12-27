@@ -25,6 +25,11 @@ class CSLDailyDataset(BaseDataset):
         self.aug_cfg = getattr(cfg, "augment", None)
         self.global_data = getattr(cfg, "global_data", None)
 
+        # -------- NEW: temporal cfg --------
+        self.temporal_cfg = None
+        if self.aug_cfg is not None:
+            self.temporal_cfg = getattr(self.aug_cfg, "temporal", None)
+
         self.root = _normalize_str(self.ds_cfg.paths.root)
         self.rgb_dir = resolve_path(self.root, self.ds_cfg.paths.rgb)
         self.text_map_path = resolve_path(self.root, self.ds_cfg.paths.text)
@@ -54,6 +59,26 @@ class CSLDailyDataset(BaseDataset):
         with open(self.split_file, "r", encoding="utf-8") as f:
             return [line.strip() for line in f if line.strip()]
 
+    # -------- NEW: temporal sampling --------
+    def _apply_temporal_sampling(self, rgb: torch.Tensor):
+        if self.temporal_cfg is None:
+            return rgb
+
+        max_frames = getattr(self.temporal_cfg, "max_frames", None)
+        if max_frames is None:
+            return rgb
+
+        T = rgb.shape[0]
+        if T <= max_frames:
+            return rgb
+
+        idx = torch.linspace(0, T - 1, max_frames).long()
+        return rgb[idx]
+
+    # -------- NEW: rgb augment placeholder --------
+    def _apply_rgb_augment(self, rgb: torch.Tensor):
+        return rgb
+
     def _load_rgb_clip(self, sample_id):
         if not self.mod_rgb:
             return None
@@ -74,7 +99,13 @@ class CSLDailyDataset(BaseDataset):
             tensor = torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
             frames.append(tensor)
 
-        return torch.stack(frames, 0)
+        rgb = torch.stack(frames, 0)  # (T,C,H,W)
+
+        # -------- NEW: apply temporal + rgb augment --------
+        rgb = self._apply_temporal_sampling(rgb)
+        rgb = self._apply_rgb_augment(rgb)
+
+        return rgb
 
     def _load_pose(self, sample_id):
         return None

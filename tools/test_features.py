@@ -60,9 +60,9 @@ def main(device="cuda"):
             src[k] = v.to(device)
             print("\n[Src Lengths]")
             print("  rgb_len:", src["rgb_len"][:8].tolist())
-            print("  kp_len :", src["kp_len"][:8].tolist())
+            # print("  kp_len :", src["kp_len"][:8].tolist())
             print("  rgb_mask shape:", tuple(src["rgb_mask"].shape))
-            print("  kp_mask  shape:", tuple(src["kp_mask"].shape))
+            # print("  kp_mask  shape:", tuple(src["kp_mask"].shape))
 
     # ---------- 6. forward encoders ----------
     with torch.no_grad():
@@ -79,7 +79,7 @@ def main(device="cuda"):
             print_feat_stats("Text Encoder Output", text_feat)
         print("\n[Encoder Time Lengths]")
         print("  rgb_feat T':", rgb_feat.shape[1])
-        print("  pose_feat T':", pose_feat.shape[1] if pose_feat.dim() == 3 else None)
+        # print("  pose_feat T':", pose_feat.shape[1] if pose_feat.dim() == 3 else None)
 
 
 if __name__ == "__main__":
