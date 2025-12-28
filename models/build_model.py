@@ -52,11 +52,9 @@ class MultiModalModel(nn.Module):
 
         self.cfg = cfg
         self.hidden_dim = cfg.model.hidden_dim
-
         self.rgb_encoder = build_rgb_encoder(cfg.rgb_encoder, self.hidden_dim)
         self.pose_encoder = build_pose_encoder(cfg.pose_encoder, self.hidden_dim)
         self.text_encoder = build_text_encoder(cfg.text_encoder, self.hidden_dim)
-
         self.retrieval_head = RetrievalHead(cfg.retrieval_head, self.hidden_dim)
 
         num_classes = getattr(getattr(cfg, "recognition_head", None), "num_classes", 5000)

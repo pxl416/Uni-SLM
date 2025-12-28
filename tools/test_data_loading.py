@@ -97,10 +97,6 @@ def inspect_pose_details(src):
         print("✅ Pose shape correct.")
 
 
-
-
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cfg", default="../config/ft.yaml")
