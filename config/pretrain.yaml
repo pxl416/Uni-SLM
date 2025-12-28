@@ -1,0 +1,40 @@
+# Dataset Registry
+active_datasets: ["CSL_Daily"]
+active_weights: [1.0]
+
+# Data Settings
+data:
+  resize: [112, 112]
+  channel: 3  # 1 or 3
+  mosaic: 1  # 1, 4 or 9
+
+datasets:
+  CSL_Daily: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/config/dataset/CSL-Daily.yaml
+  CSL_News:  config/dataset/CSL-News.yaml
+  BOBSL:     config/dataset/BOBSL.yaml
+
+# Model
+model: config/model/m2.yaml
+
+# Pretraining Task
+Pretrain:
+  task: temporal                 # temporal / spatial /tem&spa
+  train_split: train
+  eval_split:  test
+  amp: true
+
+# Evaluation Settings (pure evaluation)
+Evaluation:
+  retrieval: true
+  recognition: false
+  translation: false
+
+# Save & Logging
+save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/pretrainer/temporal
+
+wandb:
+  use: true
+  project: unisle-fttest-12 # uni-slm-finetuner
+  run_name: ft-rec-1225
+
+seed: 3407
