@@ -54,6 +54,12 @@ class CSLDailyDataset(BaseDataset):
         self.mod_pose = getattr(self.ds_cfg.modalities, "pose", False)
 
         self.resize = getattr(self.global_data, "resize", [224, 224]) if self.global_data else [224, 224]
+        # -------- NEW: pretrain task flag --------
+        self.is_temporal_pretrain = (
+            hasattr(cfg, "Pretrain")
+            and getattr(cfg.Pretrain, "task", None) in ["temporal", "tem&spa"]
+        )
+
 
     def _load_split_ids(self):
         with open(self.split_file, "r", encoding="utf-8") as f:
@@ -110,6 +116,48 @@ class CSLDailyDataset(BaseDataset):
     def _load_pose(self, sample_id):
         return None
 
+    # -------- NEW: temporal concat builder --------
+    def _build_temporal_concat_sample(self, idx):
+        """
+        Build temporal concatenated sample for pretraining.
+
+        return:
+            rgb: Tensor (T,C,H,W)
+            temporal_gt: Tensor (T,)  # 1 = sign, 0 = non-sign
+        """
+        import random
+
+        # -------- positive sample --------
+        pos_id = self.sample_ids[idx]
+        rgb_pos = self._load_rgb_clip(pos_id)
+        if rgb_pos is None:
+            rgb_pos = dummy_rgb_tensor()
+
+        rgb_pos = self._apply_temporal_sampling(rgb_pos)
+        T_pos = rgb_pos.shape[0]
+
+        # -------- negative sample (random) --------
+        neg_id = random.choice(self.sample_ids)
+        rgb_neg = self._load_rgb_clip(neg_id)
+        if rgb_neg is None:
+            rgb_neg = dummy_rgb_tensor()
+
+        rgb_neg = self._apply_temporal_sampling(rgb_neg)
+        T_neg = rgb_neg.shape[0]
+
+        # -------- concat: [neg | pos | neg] --------
+        rgb = torch.cat([rgb_neg, rgb_pos, rgb_neg], dim=0)
+
+        temporal_gt = torch.cat([
+            torch.zeros(T_neg),
+            torch.ones(T_pos),
+            torch.zeros(T_neg)
+        ], dim=0)
+
+        return rgb, temporal_gt
+
+
+
     def get_item_data(self, idx):
         sample_id = self.sample_ids[idx]
         name = sample_id
@@ -126,9 +174,18 @@ class CSLDailyDataset(BaseDataset):
             gloss = []
             gloss_ids = []
 
-        rgb_clip = self._load_rgb_clip(sample_id)
-        if rgb_clip is None:
-            rgb_clip = dummy_rgb_tensor()
+        # rgb_clip = self._load_rgb_clip(sample_id)
+        # if rgb_clip is None:
+        #     rgb_clip = dummy_rgb_tensor()
+        # -------- NEW: temporal pretrain branch --------
+        if self.is_temporal_pretrain:
+            rgb_clip, temporal_gt = self._build_temporal_concat_sample(idx)
+        else:
+            rgb_clip = self._load_rgb_clip(sample_id)
+            if rgb_clip is None:
+                rgb_clip = dummy_rgb_tensor()
+            temporal_gt = None
+
 
         seg = {"starts": [], "ends": [], "texts": []}
 
@@ -138,6 +195,10 @@ class CSLDailyDataset(BaseDataset):
             "gloss": gloss,
             "gloss_ids": gloss_ids,
         }
+
+        if temporal_gt is not None:
+            support["temporal_gt"] = temporal_gt
+
 
         return name, pose_sample, text, support
 

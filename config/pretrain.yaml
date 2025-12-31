@@ -23,18 +23,12 @@ Pretrain:
   eval_split:  test
   amp: true
 
-# Evaluation Settings (pure evaluation)
-Evaluation:
-  retrieval: true
-  recognition: false
-  translation: false
-
 # Save & Logging
 save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/pretrainer/temporal
 
 wandb:
   use: true
-  project: unisle-fttest-12 # uni-slm-finetuner
-  run_name: ft-rec-1225
+  project: unisle-pttest-12  # uni-slm-finetuner
+  run_name: pt-tem-1228
 
 seed: 3407
