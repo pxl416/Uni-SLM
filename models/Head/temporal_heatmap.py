@@ -55,3 +55,6 @@ class TemporalHeatmapHead(nn.Module):
             logits = logits.squeeze(-1)        # (B,T)
 
         return logits
+
+# Input:  (B, T, D)
+# Output: (B, T)

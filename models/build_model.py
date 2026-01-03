@@ -11,6 +11,8 @@ from models.Head.recognition import RecognitionHead
 from models.Head.retrieval import RetrievalHead
 from models.Head.translation import TranslationHead
 
+from models.Head.temporal_heatmap import TemporalHeatmapHead
+
 
 def load_pretrained_submodule(submodule, path: str, strict: bool = False):
     if path is None:

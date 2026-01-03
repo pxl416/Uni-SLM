@@ -19,9 +19,7 @@ class BaseFinetuner:
         self.model = model.to(device)
         self.device = device
 
-        # -------------------------------
         # Training configs
-        # -------------------------------
         train_cfg = getattr(cfg, "Training", None)
         if train_cfg is None:
             raise ValueError("cfg.Training not found — 请在 YAML 中添加 Training 字段")
