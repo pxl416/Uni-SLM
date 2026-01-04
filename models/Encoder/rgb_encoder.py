@@ -9,11 +9,14 @@ from einops import rearrange
 class RGBEncoder(nn.Module):
     """
     RGB Encoder = backbone (3D CNN) + projection
-    Forward:
+
+    Input:
         x: (B, T, C, H, W)
         mask: optional, ignored for CNN models
+
     Output:
-        (B, T_out, hidden_dim)
+        feat: (B, T_out, hidden_dim)
+            where T_out = T_in / 2  (e.g. 128 -> 64)
     """
 
     def __init__(self, cfg, hidden_dim):
@@ -25,11 +28,11 @@ class RGBEncoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.backbone_dim = bb_cfg.output_dim
 
-        # CNN 不需要 mask
+        # CNN 不使用 mask
         self.use_mask = False
 
         # ---------------------------------------------------------
-        # Backbone (r3d_18)
+        # Backbone: r3d_18
         # ---------------------------------------------------------
         if bb_cfg.pretrained_path:
             weights = None
@@ -38,6 +41,30 @@ class RGBEncoder(nn.Module):
 
         backbone = video_models.r3d_18(weights=weights)
 
+        # ---------- 🔧 关键改动：减少 temporal downsampling ----------
+        def _set_temporal_stride_to_1(layer):
+            """
+            For all Conv3d layers inside this block,
+            if temporal stride == 2, change it to 1.
+            """
+            for m in layer.modules():
+                if isinstance(m, nn.Conv3d):
+                    if m.stride[0] == 2:
+                        m.stride = (1, m.stride[1], m.stride[2])
+
+        # 原始 r3d_18 的 temporal stride:
+        # stem: 1
+        # layer2: 2
+        # layer3: 2
+        # layer4: 2
+        #
+        # 我们保留 layer2，下调 layer3 / layer4
+        _set_temporal_stride_to_1(backbone.layer3)
+        _set_temporal_stride_to_1(backbone.layer4)
+
+        # ---------------------------------------------------------
+        # Backbone modules
+        # ---------------------------------------------------------
         self.backbone = nn.Sequential(
             backbone.stem,
             backbone.layer1,
@@ -49,7 +76,7 @@ class RGBEncoder(nn.Module):
         # Spatial pooling only (preserve temporal length)
         self.spatial_pool = nn.AdaptiveAvgPool3d((None, 1, 1))
 
-        # Load custom pretrained backbone
+        # Load custom pretrained backbone if provided
         if bb_cfg.pretrained_path:
             state = torch.load(bb_cfg.pretrained_path, map_location="cpu")
             self.backbone.load_state_dict(state, strict=False)
@@ -60,7 +87,7 @@ class RGBEncoder(nn.Module):
                 p.requires_grad = False
 
         # ---------------------------------------------------------
-        # Projection Layer
+        # Projection layer
         # ---------------------------------------------------------
         if proj_cfg.enabled:
             if proj_cfg.type == "linear":
@@ -75,6 +102,7 @@ class RGBEncoder(nn.Module):
 
             elif proj_cfg.type == "identity":
                 self.proj = nn.Identity()
+
             else:
                 raise ValueError(f"Unknown proj type: {proj_cfg.type}")
         else:
@@ -88,20 +116,23 @@ class RGBEncoder(nn.Module):
     # ---------------------------------------------------------
     def forward(self, x, mask=None):
         """
-        mask: optional, ignored for CNN backbone
+        x: (B, T, C, H, W)
+        return: (B, T_out, hidden_dim)
         """
-        # x: (B, T, C, H, W)
         B, T, C, H, W = x.shape
+
+        # (B, T, C, H, W) -> (B, C, T, H, W)
         x = rearrange(x, "b t c h w -> b c t h w")
 
         # Backbone
-        x = self.backbone(x)  # (B, 512, T', H', W')
+        x = self.backbone(x)                 # (B, 512, T_out, H', W')
+        x = self.spatial_pool(x)             # (B, 512, T_out, 1, 1)
+        x = x.squeeze(-1).squeeze(-1)        # (B, 512, T_out)
 
-        x = self.spatial_pool(x).squeeze(-1).squeeze(-1)  # → (B, 512, T')
-
-        x = x.permute(0, 2, 1)  # → (B, T', 512)
+        # (B, 512, T_out) -> (B, T_out, 512)
+        x = x.permute(0, 2, 1)
 
         # Projection
-        x = self.proj(x)  # → (B, T', hidden_dim)
+        x = self.proj(x)                     # (B, T_out, hidden_dim)
 
         return x

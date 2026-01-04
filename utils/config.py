@@ -5,6 +5,8 @@ import re
 import yaml
 from types import SimpleNamespace
 from typing import Any, Iterable, Tuple, Dict
+from pathlib import Path
+
 
 # ---------- 标量解析用到的正则 ----------
 _INT_RE = re.compile(r"^[+-]?[0-9]+$")
@@ -28,6 +30,13 @@ REQUIRED_SCHEMAS: Dict[str, Tuple[str, ...]] = {
 }
 
 # utils/config.py 中追加的工具函数
+
+def resolve_path(path, base):
+    path = Path(path)
+    if path.is_absolute():
+        return path
+    return (base / path).resolve()
+
 
 def load_yaml(path: str):
     """从 YAML 文件加载为 Python dict。"""

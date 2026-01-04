@@ -23,6 +23,12 @@ Pretrain:
   eval_split:  test
   amp: true
 
+temporal_head:
+  enabled: true
+  dropout: 0.1
+  use_conv: false
+  resume_path: null
+
 # Save & Logging
 save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/pretrainer/temporal
 

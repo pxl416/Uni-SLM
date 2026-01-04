@@ -56,5 +56,8 @@ class TemporalHeatmapHead(nn.Module):
 
         return logits
 
-# Input:  (B, T, D)
-# Output: (B, T)
+
+# Input:
+# rgb_feat: Tensor(B, T, D)
+# Output:
+# temporal_logits: Tensor(B, T)
