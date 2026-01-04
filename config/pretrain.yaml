@@ -35,6 +35,6 @@ save_dir: /home/pxl416/PeixiLiu/px_proj/Uni-SLM/checkpoints/pretrainer/temporal
 wandb:
   use: true
   project: unisle-pttest-12  # uni-slm-finetuner
-  run_name: pt-tem-1228
+  run_name: pt-tem-260104
 
 seed: 3407

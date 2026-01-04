@@ -31,122 +31,74 @@ def _collect_params(module, base_lr, lr_mult=1.0, weight_decay=0.0):
              "weight_decay": weight_decay}]
 
 
-def build_optimizer(model, cfg_train):
+# utils/optimizer.py
+import torch
+
+
+def build_optimizer(
+    model,
+    cfg=None,
+    train_cfg=None,
+    mode=None,      # ⭐ 新增：pretrain / finetune / None
+):
     """
-    model: MultiModalModel
-    cfg_train: Training section in YAML
-        必须提供:
-            - optimizer: "adamw" or "sgd"
-            - base_lr
-            - weight_decay
-            - lr_backbone
-            - lr_proj
-            - lr_head
-            - scheduler name (optional)
+    Universal optimizer builder.
+
+    Compatible with:
+      - old finetune code
+      - new pretrain code
+      - future multi-mode extensions
+
+    Args:
+        model: nn.Module
+        cfg: full config namespace (optional)
+        train_cfg: cfg.Training namespace (preferred)
+        mode: "pretrain" | "finetune" | None
     """
 
-    opt_name = getattr(cfg_train, "optimizer", "adamw").lower()
-
-    base_lr = getattr(cfg_train, "base_lr", 1e-4)
-    lr_backbone = getattr(cfg_train, "lr_backbone", base_lr * 0.5)
-    lr_proj     = getattr(cfg_train, "lr_proj", base_lr)
-    lr_head     = getattr(cfg_train, "lr_head", base_lr)
-    weight_decay = getattr(cfg_train, "weight_decay", 0.01)
-
-    # ---------------------------------------------------------------------
-    # 1. Collect all parameter groups
-    # ---------------------------------------------------------------------
-    param_groups = []
-
-    # ---- RGB encoder
-    param_groups += _collect_params(
-        module=model.rgb_encoder.backbone,
-        base_lr=lr_backbone,
-        lr_mult=getattr(model.cfg.rgb_encoder.backbone, "lr_mult", 1.0),
-        weight_decay=weight_decay,
-    )
-    param_groups += _collect_params(
-        module=model.rgb_encoder.proj,
-        base_lr=lr_proj,
-        lr_mult=getattr(model.cfg.rgb_encoder.proj, "lr_mult", 1.0),
-        weight_decay=weight_decay,
-    )
-
-    # ---- Text encoder
-    param_groups += _collect_params(
-        module=model.text_encoder.backbone,
-        base_lr=lr_backbone * getattr(model.cfg.text_encoder.backbone, "lr_mult", 1.0),
-        lr_mult=1.0,
-        weight_decay=weight_decay,
-    )
-    param_groups += _collect_params(
-        module=model.text_encoder.proj,
-        base_lr=lr_proj,
-        lr_mult=getattr(model.cfg.text_encoder.proj, "lr_mult", 1.0),
-        weight_decay=weight_decay,
-    )
-
-    # ---- Recognition Head
-    if hasattr(model, "recognition_head") and model.recognition_head is not None:
-        param_groups += _collect_params(
-            module=model.recognition_head,
-            base_lr=lr_head,
-            lr_mult=getattr(model.cfg.recognition_head, "lr_mult", 1.0),
-            weight_decay=weight_decay,
-        )
-
-    # ---- Retrieval Head
-    if hasattr(model, "retrieval_head") and model.retrieval_head is not None:
-        param_groups += _collect_params(
-            module=model.retrieval_head,
-            base_lr=lr_head,
-            lr_mult=getattr(model.cfg.retrieval_head, "lr_mult", 1.0),
-            weight_decay=weight_decay,
-        )
-
-    # ---- Translation Head (MT5)
-    if hasattr(model, "translation_head") and model.translation_head is not None:
-        if model.translation_head.use_mt5:
-            # MT5 encoder/decoder 参数分开处理
-            param_groups += [{
-                "params": model.translation_head.mt5.parameters(),
-                "lr": lr_head * getattr(model.cfg.translation_head, "lr_mult", 0.2),
-                "weight_decay": weight_decay,
-            }]
-        # prefix proj
-        param_groups += _collect_params(
-            module=model.translation_head.video_proj,
-            base_lr=lr_head,
-            lr_mult=getattr(model.cfg.translation_head, "lr_mult", 1.0),
-            weight_decay=weight_decay,
-        )
-
-    # ---------------------------------------------------------------------
-    # 2. Build optimizer
-    # ---------------------------------------------------------------------
-    if opt_name == "adamw":
-        optimizer = AdamW(param_groups)
-    elif opt_name == "sgd":
-        optimizer = SGD(param_groups, momentum=0.9)
+    # --------------------------------------------------
+    # Resolve training config
+    # --------------------------------------------------
+    if train_cfg is not None:
+        tcfg = train_cfg
+    elif cfg is not None and hasattr(cfg, "Training"):
+        tcfg = cfg.Training
     else:
-        raise ValueError(f"Unknown optimizer: {opt_name}")
-
-    # ---------------------------------------------------------------------
-    # 3. Scheduler (optional)
-    # ---------------------------------------------------------------------
-    scheduler_type = getattr(cfg_train, "scheduler", None)
-
-    if scheduler_type == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=getattr(cfg_train, "epochs", 30)
+        raise ValueError(
+            "build_optimizer requires train_cfg or cfg.Training"
         )
-    elif scheduler_type == "step":
+
+    # --------------------------------------------------
+    # Hyperparameters (defaults)
+    # --------------------------------------------------
+    lr = getattr(tcfg, "lr", 1e-4)
+    weight_decay = getattr(tcfg, "weight_decay", 0.0)
+
+    # Optional: mode-aware lr override
+    if mode == "pretrain":
+        lr = getattr(tcfg, "pretrain_lr", lr)
+    elif mode == "finetune":
+        lr = getattr(tcfg, "finetune_lr", lr)
+
+    # --------------------------------------------------
+    # Optimizer
+    # --------------------------------------------------
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+    )
+
+    # --------------------------------------------------
+    # Scheduler (optional)
+    # --------------------------------------------------
+    scheduler = None
+    if getattr(tcfg, "use_scheduler", False):
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer,
-            step_size=getattr(cfg_train, "step_size", 10),
-            gamma=getattr(cfg_train, "gamma", 0.1)
+            step_size=getattr(tcfg, "step_size", 10),
+            gamma=getattr(tcfg, "gamma", 0.1),
         )
-    else:
-        scheduler = None
 
     return optimizer, scheduler
+

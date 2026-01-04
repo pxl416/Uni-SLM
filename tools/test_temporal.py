@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from utils.config import load_yaml_as_ns, resolve_path
 from datasets.datasets import create_dataloader
 from models.build_model import build_model
+from utils.loss import temporal_bce_loss
 
 
 # =========================================================
@@ -150,6 +151,30 @@ def main():
     else:
         target = torch.ones((B, T), device=device)
         print("[Info] Using all-ones temporal target (fallback)")
+
+    # -----------------------------------------------------
+    # Loss sanity check
+    # -----------------------------------------------------
+    print("[Info] Running temporal loss sanity check...")
+
+    # logits: (B, T_enc)
+    # gt_mask: (B, T_raw)
+    loss = temporal_bce_loss(
+        logits=temporal_logits,
+        gt_mask=src["rgb_mask"],
+        downsample_mode="avg",
+    )
+
+    print(
+        f"[Info] Temporal BCE loss = {loss.item():.6f}"
+    )
+
+    # Basic safety checks
+    assert torch.isfinite(loss), "Loss is NaN or Inf!"
+    assert loss.item() >= 0.0, "Loss should be non-negative!"
+
+    print("[Info] Temporal loss sanity check passed ✔")
+
 
     # -----------------------------------------------------
     # Visualization
