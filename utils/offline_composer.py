@@ -25,9 +25,19 @@ def main(temporal_test=True, spatial_test=False):
 
 if __name__ == "__main__":
     main()
+"""
+  paths:
+    root: /home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512
+    rgb: sentence
+    pose: null
+    text: sentence_label/csl2020ct_v2.pkl
+    segments: sentence_label/video_map.txt
 
-
-
+  splits:
+    train: sentence_label/split_1_train.txt
+    dev:   sentence_label/split_1_dev.txt
+    test:  sentence_label/split_1_test.txt
+"""
 
 
 
