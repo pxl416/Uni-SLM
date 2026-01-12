@@ -92,4 +92,55 @@ class AssetPool:
             "num_backgrounds": len(self.bg_assets),
         }
 
+if __name__ == "__main__":
+    print("=== Synthetic World Asset Test ===")
+
+    # ---- create fake sign clip ----
+    T, H, W = 40, 128, 128
+    sign_frames = np.random.randint(0, 255, (T, H, W, 3), dtype=np.uint8)
+    keypoints = np.random.rand(T, 21, 3).astype(np.float32)
+
+    sign = SignAsset(
+        asset_id="sign_001",
+        frames=sign_frames,
+        keypoints=keypoints,
+        text="hello",
+        gloss=["HELLO"],
+        fps=25,
+    )
+
+    # ---- create fake background clip ----
+    T2 = 100
+    bg_frames = np.random.randint(0, 255, (T2, H, W, 3), dtype=np.uint8)
+
+    bg = BackgroundAsset(
+        asset_id="bg_001",
+        frames=bg_frames,
+        fps=25,
+        motion_level=0.3,
+        scene_type="office"
+    )
+
+    # ---- put into pool ----
+    pool = AssetPool()
+    pool.add_sign(sign)
+    pool.add_background(bg)
+
+    print("Pool summary:", pool.summary())
+
+    # ---- sample ----
+    s = pool.sample_sign()
+    b = pool.sample_background()
+
+    print("\nSampled Sign:")
+    print("  id:", s.asset_id)
+    print("  text:", s.text)
+    print("  duration:", s.duration, "sec")
+
+    print("\nSampled Background:")
+    print("  id:", b.asset_id)
+    print("  scene:", b.scene_type)
+    print("  duration:", b.duration, "sec")
+
+    print("\nTest passed ✔")
 
