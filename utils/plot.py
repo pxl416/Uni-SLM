@@ -42,6 +42,61 @@ DEFAULT_TOPOLOGY_21 = [
     (0,17),(17,18),(18,19),(19,20),
 ]
 
+# utils/plots.py
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def plot_temporal_label(
+    label: np.ndarray,
+    title: str = "Temporal Supervision",
+    save_path: str = None
+):
+    label = np.asarray(label).astype(np.float32)
+
+    plt.figure(figsize=(10, 2))
+    plt.plot(label, linewidth=2)
+    plt.ylim(-0.05, 1.05)
+    plt.xlabel("Frame index")
+    plt.ylabel("Sign (0/1)")
+    plt.title(title)
+    plt.grid(True)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=160)
+    else:
+        plt.show()
+
+    plt.close()
+def save_temporal_timeline(
+    label: np.ndarray,
+    title: str = "Temporal supervision",
+    save_path: str = None,
+):
+    """
+    label: (T,) array, values in {0,1} or [0,1]
+    """
+    import matplotlib.pyplot as plt
+
+    label = label.astype(float)
+    T = len(label)
+
+    plt.figure(figsize=(max(6, T / 50), 2))
+    plt.plot(label, linewidth=2)
+    plt.ylim(-0.05, 1.05)
+    plt.xlabel("Frame index")
+    plt.ylabel("Sign probability")
+    plt.title(title)
+    plt.grid(True)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=160)
+        plt.close()
+    else:
+        plt.show()
+
 
 # ------------------------- Skeleton Drawing -------------------------
 def draw_skeleton_on_pil(
