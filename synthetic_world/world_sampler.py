@@ -1,119 +1,120 @@
 # synthetic_world/world_sampler.py
-# 输入sign和bg视频，输出timeline
-
 import random
-from typing import List, Dict
+from dataclasses import dataclass
+from typing import List
 
-from synthetic_world.assets import SignAsset, BackgroundAsset
-from synthetic_world.loaders.csl_daily import load_csl_daily_as_assets
-from synthetic_world.loaders.ucf101 import load_ucf101_as_assets
+from synthetic_world.assets import AssetPool, SignAsset, BackgroundAsset
+
+
+@dataclass
+class WorldTimeline:
+    background: BackgroundAsset
+    segments: List[dict]   # each: {sign, start_sec, end_sec}
 
 
 class WorldSampler:
     """
-    Sample semantic-consistent synthetic worlds from asset pools.
-    This does NOT render pixels – it only creates a timeline.
+    Minimal world sampler:
+      - pick 1 background
+      - pick N sign clips
+      - place them randomly on timeline (no overlap)
     """
 
-    def __init__(
-        self,
-        sign_assets: List[SignAsset],
-        background_assets: List[BackgroundAsset],
-        max_signs_per_bg: int = 3,
-        min_gap: float = 0.3,
-    ):
-        self.sign_assets = sign_assets
-        self.background_assets = background_assets
-        self.max_signs_per_bg = max_signs_per_bg
-        self.min_gap = min_gap
+    def __init__(self, pool: AssetPool,
+                 min_signs=1,
+                 max_signs=3,
+                 target_duration=8.0):
+        self.pool = pool
+        self.min_signs = min_signs
+        self.max_signs = max_signs
+        self.target_duration = target_duration
 
-    def sample_world(self) -> Dict:
-        """
-        Sample one synthetic world.
+    def sample_world(self) -> WorldTimeline:
+        bg = self.pool.sample_background()
 
-        Returns:
-            {
-                "background": BackgroundAsset,
-                "timeline": [
-                    {"sign": SignAsset, "start": float, "end": float},
-                    ...
-                ]
-            }
-        """
-        bg = random.choice(self.background_assets)
-        T = bg.duration
+        max_dur = min(bg.duration, self.target_duration)
 
-        # number of signs in this world
-        k = random.randint(0, self.max_signs_per_bg)
+        num_signs = random.randint(self.min_signs, self.max_signs)
 
-        signs = random.sample(self.sign_assets, k) if k > 0 else []
+        signs = [self.pool.sample_sign() for _ in range(num_signs)]
 
-        timeline = []
-
-        cursor = 0.0
+        segments = []
+        used = []
 
         for sign in signs:
             dur = sign.duration
 
-            if cursor + dur >= T:
-                break
+            for _ in range(20):  # try 20 times to find free slot
+                start = random.uniform(0, max_dur - dur)
+                end = start + dur
 
-            # random jitter inside remaining time
-            start = random.uniform(cursor, max(cursor, T - dur))
-            end = start + dur
+                if not self._overlaps(start, end, used):
+                    used.append((start, end))
+                    segments.append({
+                        "sign": sign,
+                        "start_sec": start,
+                        "end_sec": end,
+                    })
+                    break
 
-            timeline.append(
-                {
-                    "sign": sign,
-                    "start": start,
-                    "end": end,
-                }
-            )
+        segments.sort(key=lambda x: x["start_sec"])
 
-            cursor = end + self.min_gap
+        return WorldTimeline(
+            background=bg,
+            segments=segments
+        )
 
-        timeline = sorted(timeline, key=lambda x: x["start"])
-
-        return {
-            "background": bg,
-            "timeline": timeline,
-        }
-
-    def sample_batch(self, n: int):
-        return [self.sample_world() for _ in range(n)]
-
+    def _overlaps(self, s, e, used):
+        for us, ue in used:
+            if not (e <= us or s >= ue):
+                return True
+        return False
 
 if __name__ == "__main__":
+    print("=== Testing WorldSampler ===")
 
+    from synthetic_world.loaders.csl_daily import load_csl_daily_as_assets
+    from synthetic_world.loaders.ucf101 import load_ucf101_as_assets
+    from synthetic_world.assets import AssetPool
 
-    print("=== World Sampler Test ===")
+    print("Loading assets...")
 
     signs = load_csl_daily_as_assets(
         root="/home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512",
         rgb_dir="sentence",
         anno_pkl="sentence_label/csl2020ct_v2.pkl",
         split_file="sentence_label/split_1_train.txt",
-        max_samples=10,
+        max_samples=20,
+        verbose=False,
     )
 
     bgs = load_ucf101_as_assets(
         root="/home/pxl416/PeixiLiu/px_proj/px_data/UCF-101",
-        max_samples=5,
+        max_samples=10,
+        verbose=False,
     )
 
-    sampler = WorldSampler(signs, bgs, max_signs_per_bg=3)
+    pool = AssetPool()
+    for s in signs:
+        pool.add_sign(s)
+    for b in bgs:
+        pool.add_background(b)
+
+    print("Pool summary:", pool.summary())
+
+    sampler = WorldSampler(pool, min_signs=1, max_signs=3, target_duration=6.0)
 
     world = sampler.sample_world()
 
-    bg = world["background"]
-    print("\nBackground:", bg.asset_id, "duration:", bg.duration)
+    print("\nSampled world:")
+    print("Background:", world.background.asset_id)
+    print("Background duration:", world.background.duration)
 
-    print("Timeline:")
-    for e in world["timeline"]:
-        s = e["sign"]
-        print(
-            f"  {s.asset_id} ({s.text})  {e['start']:.2f}s → {e['end']:.2f}s"
-        )
+    for i, seg in enumerate(world.segments):
+        sign = seg["sign"]
+        print(f"  Sign {i+1}: {sign.asset_id} "
+              f"[{seg['start_sec']:.2f}s → {seg['end_sec']:.2f}s] "
+              f"text='{sign.text}'")
 
-    print("\nTest passed ✔")
+    print("\nWorldSampler test passed ✔")
 

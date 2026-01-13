@@ -1,249 +1,363 @@
-# synthetic_world/renderer.py
-# 合成器，输入bg_frame, list of (sign_frame, mask)，输出final_frame
-
-# synthetic_world/renderer.py
 from __future__ import annotations
-import os
+
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
 import cv2
-import torch
 
-from synthetic_world.assets import SignAsset, BackgroundAsset
+from temporal_composer import TemporalComposer
+from spatial_composer import SpatialComposer
 
-
-# -----------------------------
-# Utilities
-# -----------------------------
-
-def _to_torch_clip(x) -> torch.Tensor:
-    """
-    Accept np.ndarray or torch.Tensor clip.
-    Return torch float32 (T,C,H,W) in [0,1].
-    """
-    if isinstance(x, torch.Tensor):
-        t = x
-    else:
-        t = torch.from_numpy(x)
-
-    # (T,H,W,C) -> (T,C,H,W)
-    if t.ndim == 4 and t.shape[-1] in (1, 3):
-        t = t.permute(0, 3, 1, 2)
-
-    if t.dtype != torch.float32:
-        t = t.float()
-
-    # If looks like uint8 [0,255], normalize
-    if t.max() > 1.5:
-        t = t / 255.0
-
-    t = t.clamp(0.0, 1.0)
-    return t
-
-
-def _resample_to_fps(clip: torch.Tensor, fps_src: int, fps_tgt: int) -> torch.Tensor:
-    """
-    Resample by index mapping. clip: (T,C,H,W)
-    """
-    if fps_src == fps_tgt:
-        return clip
-
-    T = clip.shape[0]
-    ratio = float(fps_tgt) / float(fps_src)
-    new_T = max(1, int(round(T * ratio)))
-
-    idx = torch.linspace(0, T - 1, new_T).long()
-    return clip[idx]
-
-
-def _ensure_same_hw(src: torch.Tensor, tgt_hw: Tuple[int, int]) -> torch.Tensor:
-    """
-    Resize clip to target H,W using bilinear.
-    """
-    _, C, H, W = src.shape
-    tgt_h, tgt_w = tgt_hw
-    if (H, W) == (tgt_h, tgt_w):
-        return src
-    src = torch.nn.functional.interpolate(src, size=(tgt_h, tgt_w), mode="bilinear", align_corners=False)
-    return src
-
-
-def save_video_mp4(
-    clip: torch.Tensor,
-    save_path: str,
-    fps: int = 25
-):
-    """
-    clip: (T,C,H,W) float in [0,1]
-    """
-    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-
-    clip = clip.detach().cpu().clamp(0, 1)
-    T, C, H, W = clip.shape
-    assert C == 3, "save_video_mp4 expects RGB 3 channels"
-
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(save_path, fourcc, fps, (W, H))
-
-    for i in range(T):
-        rgb = (clip[i].permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)  # (H,W,3) RGB
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        writer.write(bgr)
-
-    writer.release()
-    print(f"[Saved video] {save_path}")
-
-
-# -----------------------------
-# Render result container
-# -----------------------------
 
 @dataclass
 class RenderResult:
-    rgb: torch.Tensor          # (T,C,H,W) float in [0,1]
-    temporal_gt: torch.Tensor  # (T,) float32 in {0,1}
-    segments: List[Dict]       # list of dict segments for audit/debug
+    """渲染结果容器"""
+    rgb: np.ndarray  # (T, H, W, 3) uint8
+    temporal_gt: np.ndarray  # (T,) float32 (简单版：有sign=1，否则0)
+    spatial_masks: List[List[np.ndarray]]  # 每帧一个list，每个sign一个(H,W) uint8 mask
+    bboxes_per_frame: List[List[Tuple[int, int, int, int]]]  # 每帧一个list，每个sign一个bbox
+    frame_instructions: List[Dict[str, Any]]  # TemporalComposer输出
+    timeline: Any  # 原始timeline
 
-
-# -----------------------------
-# Renderer (MVP)
-# -----------------------------
 
 class WorldRenderer:
     """
-    MVP renderer:
-    - timeline is in seconds
-    - render by blending sign frames onto background frames (full-frame blend)
-    - output temporal_gt (frame-level)
+    合成世界渲染器：整合 temporal + spatial composer
+    - temporal: 负责“这一帧有哪些sign、各自取第几帧”
+    - spatial: 负责“把sign帧放到背景哪里、如何混合、输出mask/bbox”
     """
 
     def __init__(
         self,
-        blend_alpha: float = 0.85,     # 1.0 = replace, 0.0 = keep bg
-        force_fps: Optional[int] = None
+        output_size: Tuple[int, int] = (224, 224),  # (W,H)
+        fps: int = 25,
+        spatial_config: Optional[Dict[str, Any]] = None,
+        temporal_config: Optional[Dict[str, Any]] = None,
+        seed: Optional[int] = None,
+        enable_cache: bool = True,
     ):
-        self.blend_alpha = float(blend_alpha)
-        self.force_fps = force_fps
+        self.output_size = output_size
+        self.fps = fps
+        self.seed = seed
+        self.enable_cache = enable_cache
 
-    def render(self, world: Dict) -> RenderResult:
-        bg: BackgroundAsset = world["background"]
-        timeline: List[Dict] = world.get("timeline", [])
+        self.rng = np.random.default_rng(seed)
 
-        # --- background clip to torch ---
-        bg_clip = _to_torch_clip(bg.frames)  # (T,C,H,W)
-        fps_bg = int(self.force_fps or bg.fps)
+        temporal_config = temporal_config or {}
+        # 你当前TemporalComposer只吃fps，所以这里不要乱传kwargs
+        self.temporal_composer = TemporalComposer(fps=fps)
 
-        if fps_bg != bg.fps:
-            bg_clip = _resample_to_fps(bg_clip, bg.fps, fps_bg)
+        spatial_config = spatial_config or {}
+        self.spatial_composer = SpatialComposer(
+            output_size=output_size,
+            **spatial_config
+        )
 
-        T_bg, C, H, W = bg_clip.shape
+        # caches
+        # 背景：按 (asset_id, frame_idx) 缓存单帧（可选）
+        self._bg_frame_cache: Dict[str, np.ndarray] = {}
+        # 手语：按 asset_id 缓存整段 frames（强烈建议）
+        self._sign_full_cache: Dict[str, np.ndarray] = {}
 
-        out = bg_clip.clone()
-        temporal_gt = torch.zeros((T_bg,), dtype=torch.float32)
-        segments_out: List[Dict] = []
+    # ---------------- Public API ----------------
 
-        # --- render each sign event ---
-        for ev in timeline:
-            sign: SignAsset = ev["sign"]
-            start_sec = float(ev["start"])
-            end_sec = float(ev["end"])
+    def render(self, timeline, clear_cache: bool = True) -> RenderResult:
+        """
+        渲染完整timeline，输出视频与基础标注（temporal_gt + masks + bboxes）
+        """
+        frame_instructions = self.temporal_composer.compose(timeline)
+        total_frames = len(frame_instructions)
 
-            # convert seconds -> frame indices in bg timeline
-            start_f = int(round(start_sec * fps_bg))
-            end_f = int(round(end_sec * fps_bg))
-            start_f = max(0, min(T_bg, start_f))
-            end_f = max(0, min(T_bg, end_f))
+        if total_frames == 0:
+            return self._create_empty_result(timeline)
 
-            if end_f <= start_f:
-                continue
+        H, W = self.output_size[1], self.output_size[0]
+        rgb = np.zeros((total_frames, H, W, 3), dtype=np.uint8)
+        temporal_gt = np.zeros((total_frames,), dtype=np.float32)
+        spatial_masks: List[List[np.ndarray]] = []
+        bboxes_per_frame: List[List[Tuple[int, int, int, int]]] = []
 
-            # sign clip to torch, resample to bg fps, resize to bg hw
-            sign_clip = _to_torch_clip(sign.frames)
-            fps_sign = int(getattr(sign, "fps", fps_bg))
+        for t, inst in enumerate(frame_instructions):
+            comp, masks, bboxes = self._render_single_frame(inst)
+            rgb[t] = comp
+            temporal_gt[t] = 1.0 if len(inst.get("active_signs", [])) > 0 else 0.0
+            spatial_masks.append(masks)
+            bboxes_per_frame.append(bboxes)
 
-            sign_clip = _resample_to_fps(sign_clip, fps_sign, fps_bg)
-            sign_clip = _ensure_same_hw(sign_clip, (H, W))
+        if clear_cache:
+            self.clear_caches()
 
-            # fit sign length into [start_f, end_f)
-            L_slot = end_f - start_f
-            if sign_clip.shape[0] >= L_slot:
-                sign_use = sign_clip[:L_slot]
-            else:
-                # loop pad (simple + stable)
-                reps = int(np.ceil(L_slot / sign_clip.shape[0]))
-                sign_use = sign_clip.repeat((reps, 1, 1, 1))[:L_slot]
+        return RenderResult(
+            rgb=rgb,
+            temporal_gt=temporal_gt,
+            spatial_masks=spatial_masks,
+            bboxes_per_frame=bboxes_per_frame,
+            frame_instructions=frame_instructions,
+            timeline=timeline
+        )
 
-            # full-frame blend
-            a = self.blend_alpha
-            out[start_f:end_f] = (1 - a) * out[start_f:end_f] + a * sign_use
+    def render_debug(self, timeline, max_frames: int = 10) -> Dict[str, Any]:
+        """
+        调试：只渲染前max_frames帧，返回更详细的中间信息
+        """
+        frame_instructions = self.temporal_composer.compose(timeline)
+        total_frames = min(len(frame_instructions), max_frames)
 
-            temporal_gt[start_f:end_f] = 1.0
+        rendered_frames = []
+        frame_details = []
 
-            segments_out.append({
-                "sign_id": getattr(sign, "asset_id", "unknown_sign"),
-                "text": getattr(sign, "text", ""),
-                "start_sec": start_f / fps_bg,
-                "end_sec": end_f / fps_bg,
-                "start_frame": start_f,
-                "end_frame": end_f,
+        for t in range(total_frames):
+            inst = frame_instructions[t]
+            comp, masks, bboxes = self._render_single_frame(inst)
+
+            rendered_frames.append(comp)
+            frame_details.append({
+                "t": t,
+                "timestamp": inst.get("timestamp"),
+                "bg_frame_idx": inst.get("bg_frame_idx"),
+                "num_active_signs": len(inst.get("active_signs", [])),
+                "sign_ids": [s["sign"].asset_id for s in inst.get("active_signs", [])],
+                "bboxes": bboxes,
+                "mask_nonzero": [int((m > 0).sum()) for m in masks],
             })
 
-        return RenderResult(rgb=out.clamp(0, 1), temporal_gt=temporal_gt, segments=segments_out)
+        return {
+            "timeline": {
+                "background": getattr(timeline.background, "asset_id", "unknown"),
+                "num_segments": len(getattr(timeline, "segments", [])),
+                "duration": getattr(timeline.background, "duration", None),
+            },
+            "frames": rendered_frames,
+            "details": frame_details,
+        }
+
+    def clear_caches(self):
+        self._bg_frame_cache.clear()
+        self._sign_full_cache.clear()
+
+    # ---------------- Internal ----------------
+
+    def _render_single_frame(self, instruction: Dict[str, Any]) -> Tuple[np.ndarray, List[np.ndarray], List[Tuple[int, int, int, int]]]:
+        """
+        instruction 来自 TemporalComposer.compose
+        """
+        # 背景帧
+        bg_asset = instruction.get("background_asset", None)  # 兼容字段（如果你未来改结构）
+        bg_frame_idx = instruction.get("bg_frame_idx", 0)
+        bg_asset = instruction.get("bg_asset", bg_asset)
+        if bg_asset is None:
+            raise ValueError("TemporalComposer.compose must include bg_asset in each instruction. "
+                             "Please add: {'bg_asset': timeline.background} in compose().")
+
+        bg_frame = self._load_background_frame(bg_asset, bg_frame_idx)
+
+        # sign frames info
+        sign_frames_info: List[Dict[str, Any]] = []
+        for s in instruction.get("active_signs", []):
+            sign_asset = s["sign"]
+            sign_frame_idx = int(s["asset_frame_idx"])
+
+            sign_frame = self._load_sign_frame(sign_asset, sign_frame_idx)
+
+            sign_frames_info.append({
+                "frame": sign_frame,  # (h,w,3) or (h,w,4) uint8
+                "sign_id": sign_asset.asset_id,
+                "category": s.get("category", getattr(sign_asset, "semantic_category", "general")),
+                "text": s.get("text", getattr(sign_asset, "text", "")),
+            })
+
+        composite, masks, bboxes = self.spatial_composer.compose_frame(
+            bg_frame=bg_frame,
+            sign_frames_info=sign_frames_info,
+            rng=self.rng
+        )
+        return composite, masks, bboxes
+
+    def _load_background_frame(self, bg_asset, frame_idx: int) -> np.ndarray:
+        """
+        背景按需slice加载：BackgroundAsset.load_frames(start_frame, end_frame, target_size)
+        """
+        H, W = self.output_size[1], self.output_size[0]
+        cache_key = f"{bg_asset.asset_id}::{frame_idx}"
+
+        if self.enable_cache and cache_key in self._bg_frame_cache:
+            return self._bg_frame_cache[cache_key].copy()
+
+        try:
+            frames = bg_asset.load_frames(
+                start_frame=frame_idx,
+                end_frame=frame_idx + 1,
+                target_size=self.output_size
+            )
+            if frames is None or len(frames) == 0:
+                raise RuntimeError("empty frames returned")
+            frame = frames[0]
+        except Exception as e:
+            print(f"[WorldRenderer] bg load failed: {bg_asset.asset_id} frame={frame_idx} err={e}")
+            frame = np.zeros((H, W, 3), dtype=np.uint8)
+
+        # 保证尺寸与类型
+        if frame.shape[:2] != (H, W):
+            frame = cv2.resize(frame, (W, H))
+        if frame.dtype != np.uint8:
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+        if self.enable_cache:
+            self._bg_frame_cache[cache_key] = frame.copy()
+        return frame
+
+    def _load_sign_frame(self, sign_asset, frame_idx: int) -> np.ndarray:
+        """
+        SignAsset 目前不支持 slice 加载，所以采取：
+        - 首次加载：sign_asset.load_frames()，缓存整段
+        - 后续直接取frame_idx
+        """
+        asset_id = sign_asset.asset_id
+
+        if self.enable_cache and asset_id in self._sign_full_cache:
+            frames = self._sign_full_cache[asset_id]
+        else:
+            try:
+                frames = sign_asset.load_frames()  # (T,H,W,3) uint8
+                if frames is None or len(frames) == 0:
+                    raise RuntimeError("empty sign frames")
+            except Exception as e:
+                print(f"[WorldRenderer] sign load failed: {asset_id} err={e}")
+                # 红块作为错误指示
+                frames = np.zeros((1, 64, 64, 3), dtype=np.uint8)
+                frames[..., 0] = 255
+
+            if self.enable_cache:
+                self._sign_full_cache[asset_id] = frames
+
+        # clamp idx
+        frame_idx = int(np.clip(frame_idx, 0, len(frames) - 1))
+        frame = frames[frame_idx]
+
+        # ensure RGB
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        if frame.shape[-1] not in (3, 4):
+            # fallback: force to 3
+            frame = frame[..., :3]
+
+        if frame.dtype != np.uint8:
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+        return frame
+
+    def _create_empty_result(self, timeline) -> RenderResult:
+        H, W = self.output_size[1], self.output_size[0]
+        empty = np.zeros((1, H, W, 3), dtype=np.uint8)
+        return RenderResult(
+            rgb=empty,
+            temporal_gt=np.zeros((1,), dtype=np.float32),
+            spatial_masks=[[]],
+            bboxes_per_frame=[[]],
+            frame_instructions=[],
+            timeline=timeline
+        )
 
 
-# -----------------------------
-# Test
-# -----------------------------
-
+# ----------------- Test -----------------
 if __name__ == "__main__":
-    import random
-    from synthetic_world.loaders.csl_daily import load_csl_daily_as_assets
-    from synthetic_world.loaders.ucf101 import load_ucf101_as_assets
-    from synthetic_world.world_sampler import WorldSampler
+    print("=== Testing WorldRenderer ===")
 
-    print("=== Renderer Test ===")
+    from dataclasses import dataclass
+    from typing import List
 
-    # Load small pools
-    signs = load_csl_daily_as_assets(
-        root="/home/pxl416/PeixiLiu/px_proj/px_data/csl-daily-frames-512x512",
-        rgb_dir="sentence",
-        anno_pkl="sentence_label/csl2020ct_v2.pkl",
-        split_file="sentence_label/split_1_train.txt",
-        resize=(224, 224),
-        max_samples=20,
+    @dataclass
+    class MockBackground:
+        asset_id: str
+        num_frames: int
+        duration: float
+
+        def load_frames(self, start_frame=0, end_frame=None, target_size=None):
+            if end_frame is None:
+                end_frame = start_frame + 1
+            W, H = target_size if target_size is not None else (160, 120)
+            frames = []
+            for i in range(start_frame, min(end_frame, self.num_frames)):
+                img = np.zeros((H, W, 3), dtype=np.uint8)
+                img[:] = (20, 80, 20)  # green-ish
+                cv2.putText(img, f"BG {i}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                frames.append(img)
+            return np.stack(frames) if frames else np.zeros((0, H, W, 3), dtype=np.uint8)
+
+    @dataclass
+    class MockSign:
+        asset_id: str
+        text: str
+        num_frames: int
+        duration: float
+        semantic_category: str = "general"
+        gloss: List[str] = None
+
+        def load_frames(self, max_frames=None, target_size=None):
+            # 返回整段 (T,H,W,3)，模拟SignAsset folder模式
+            T = self.num_frames if max_frames is None else min(self.num_frames, max_frames)
+            W, H = target_size if target_size is not None else (80, 80)
+            frames = []
+            for i in range(T):
+                img = np.zeros((H, W, 4), dtype=np.uint8)
+                # 一块带alpha的彩色块
+                img[..., 3] = 0
+                cv2.rectangle(img, (10, 10), (W - 10, H - 10), (255, 0, 0, 255), -1)
+                cv2.putText(img, f"S{i}", (5, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255, 255), 2)
+                frames.append(img)
+            return np.stack(frames, axis=0)
+
+    @dataclass
+    class MockTimeline:
+        background: MockBackground
+        segments: List[dict]
+
+    # 1) timeline
+    bg = MockBackground("bg_office", num_frames=60, duration=6.0)
+    s1 = MockSign("sign_hello", "hello", num_frames=30, duration=3.0, semantic_category="greeting", gloss=["HELLO"])
+    s2 = MockSign("sign_thanks", "thanks", num_frames=20, duration=2.0, semantic_category="general", gloss=["THANKS"])
+
+    timeline = MockTimeline(
+        background=bg,
+        segments=[
+            {"sign": s1, "start_sec": 0.5, "end_sec": 2.5},
+            {"sign": s2, "start_sec": 2.0, "end_sec": 4.0},
+        ]
     )
 
-    bgs = load_ucf101_as_assets(
-        root="/home/pxl416/PeixiLiu/px_proj/px_data/UCF-101",
-        resize=(224, 224),
-        max_frames=120,
-        max_samples=10,
+    # 2) IMPORTANT: 你当前 TemporalComposer.compose() 需要加 bg_asset 到 instruction
+    #    所以这里我们临时 monkey-patch 一下，模拟你会在 TemporalComposer 里加：
+    #    inst["bg_asset"] = timeline.background
+    class TemporalComposerPatched(TemporalComposer):
+        def compose(self, tl):
+            insts = super().compose(tl)
+            for it in insts:
+                it["bg_asset"] = tl.background
+            return insts
+
+    renderer = WorldRenderer(
+        output_size=(320, 240),
+        fps=10,
+        seed=42,
+        spatial_config={"position_mode": "random", "blend_mode": "alpha"},
     )
+    renderer.temporal_composer = TemporalComposerPatched(fps=10)
 
-    sampler = WorldSampler(signs, bgs, max_signs_per_bg=3, min_gap=0.3)
-    world = sampler.sample_world()
+    result = renderer.render(timeline, clear_cache=True)
 
-    renderer = WorldRenderer(blend_alpha=0.85)
-    result = renderer.render(world)
+    print("RGB:", result.rgb.shape, result.rgb.dtype)
+    print("temporal_gt:", result.temporal_gt.shape, "pos_frames=", float(result.temporal_gt.sum()))
+    print("frames masks:", len(result.spatial_masks), "frames bboxes:", len(result.bboxes_per_frame))
 
-    print("\n[Render] rgb:", tuple(result.rgb.shape))
-    print("[Render] temporal_gt:", tuple(result.temporal_gt.shape), "pos_frames:", int(result.temporal_gt.sum().item()))
-    print("[Render] segments:", len(result.segments))
-    for s in result.segments[:3]:
-        print(" ", s)
+    # sanity check: bbox count should match active sign count for those frames
+    checked = 0
+    for t, inst in enumerate(result.frame_instructions[:20]):
+        n = len(inst["active_signs"])
+        if n > 0:
+            assert len(result.bboxes_per_frame[t]) == n
+            assert len(result.spatial_masks[t]) == n
+            checked += 1
+    print("checked active frames:", checked)
 
-    # Save audit video
-    out_dir = "./synthetic_world_debug"
-    os.makedirs(out_dir, exist_ok=True)
-    save_video_mp4(result.rgb, os.path.join(out_dir, "render_demo.mp4"), fps=int(world["background"].fps))
-
-    # Save temporal gt
-    np.save(os.path.join(out_dir, "temporal_gt.npy"), result.temporal_gt.cpu().numpy())
-    print(f"[Saved] {out_dir}/temporal_gt.npy")
-
-    print("\nTest passed ✔")
-
-
-
+    print("Test passed ✔")
