@@ -1,3 +1,30 @@
+# config/pretrain.yaml
+Pretrain:
+  task: temporal                 # temporal / spatial / tem&spa
+  train_split: train
+  eval_split:  test
+  amp: true
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Dataset Registry
 active_datasets: ["CSL_Daily"]
 active_weights: [1.0]
@@ -16,12 +43,6 @@ datasets:
 # Model
 model: config/model/m2.yaml
 
-# Pretraining Task
-Pretrain:
-  task: temporal                 # temporal / spatial /tem&spa
-  train_split: train
-  eval_split:  test
-  amp: true
 
 temporal_head:
   enabled: true
