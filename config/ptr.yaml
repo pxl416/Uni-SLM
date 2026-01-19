@@ -1,16 +1,20 @@
 # config/pretrain.yaml
 Pretrain:
   task: temporal                 # temporal / spatial / tem&spa
-  train_split: train
-  eval_split:  test
-  # amp放到--配置里
 
 # Dataset Registry
 Active_dataset:
   SL_datasets: ["CSL_Daily", "CSL_News", "BOBSL"]
   SL_weights: [1.0, 1.5, 0.5]
-  BG_datasets: ["UCF101", "***"]
-  BG_weights: [1.0, 1.5]
+  BG_datasets: ["UCF101", "something-somethind-v2"]
+  BG_weights: [1.0, 0.5]
+
+# Synthetic World
+synthetic_method: config/synthetic/syn1.yaml
+
+# trainer
+#  train_split: train
+#  eval_split:  test
 
 # Data Settings
 data:

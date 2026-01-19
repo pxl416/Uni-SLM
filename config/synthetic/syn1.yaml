@@ -1,0 +1,76 @@
+# config/synthetic/syn1.yaml
+
+# ---------- Global ----------
+seed: 42
+fps: 25
+
+output:
+  size: [224, 224]        # (W, H)
+  format: "video"         # video | frames
+  codec: "mp4v"
+
+# ---------- World Sampling ----------
+world:
+  target_duration: 8.0    # seconds
+  min_signs: 1
+  max_signs: 3
+
+  overlap_policy: "none"  # v1 only supports non-overlap
+  retry_limit: 20         # implicit in sampler
+
+# ---------- Temporal Composition ----------
+temporal:
+  duration_mode: "min"    # min | background | target
+  loop_background: false
+
+  segment:
+    min_frames: 10        # minimal segment length safeguard
+
+# ---------- Spatial Composition ----------
+spatial:
+  position_mode: "random"        # random | center | center_bottom | grid
+  scale_range: [0.8, 1.2]
+  allow_flip: false
+  blend_mode: "alpha"            # alpha | replace | screen
+
+  semantic_layout:
+    greeting: "center_bottom"
+    question: "right_center"
+    number: "center"
+    family: "left_center"
+    general: "center"
+
+# ---------- Rendering ----------
+renderer:
+  enable_cache: true
+  cache:
+    background_frames: true
+    sign_full_clip: true
+
+# ---------- Labels ----------
+labels:
+  include_masks: true
+
+  temporal:
+    binary_gt: true      # 1 if any sign active
+
+  spatial:
+    bbox: true
+    mask: true
+
+  text:
+    extract_vocabulary: true
+    language_heuristic: "auto"   # ascii -> en, else zh (v1 hack)
+
+# ---------- Debug / Audit ----------
+debug:
+  visualize: true
+  save_samples: 5
+  log_level: "INFO"
+
+audit:
+  save_overlay_video: true
+  save_separate_views: true
+  save_temporal_analysis: true
+  save_spatial_analysis: true
+  save_metadata: true

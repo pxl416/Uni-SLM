@@ -3,7 +3,7 @@ Pretrain:
   task: temporal                 # temporal / spatial / tem&spa
   train_split: train
   eval_split:  test
-  amp: true
+
 
 
 

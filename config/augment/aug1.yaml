@@ -1,0 +1,37 @@
+# config/augment/aug1.yaml
+augment:
+
+  rgb:
+    random_resized_crop:
+      enabled: false
+      scale: [0.8, 1.0]
+      ratio: [0.9, 1.1]
+
+    horizontal_flip:
+      enabled: false
+      p: 0.5
+
+    color_jitter:
+      enabled: false
+      brightness: 0.1
+      contrast: 0.1
+      saturation: 0.1
+      hue: 0.05
+
+    gaussian_blur:
+      enabled: false
+
+  pose:
+    jitter:
+      enabled: false
+      noise: 0.01
+
+  text:
+    enabled: false
+#    mixed: 0.15         # 例如 gloss mask、token drop 等
+
+  temporal:
+    min_frames: 1
+    max_frames: 128  # 16, 64, 8, 128
+    jitter: false
+    strategy: uniform   # uniform / dense / random / stride
