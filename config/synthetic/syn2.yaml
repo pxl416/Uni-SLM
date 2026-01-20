@@ -1,23 +1,41 @@
-# config/synthetic/syn2.yaml
-# world settings
 seed: 42
 fps: 25
-# temporal settings
+
 temporal:
-  duration_mode: min
+  timeline_mode: shortest
   segment:
-    min_frames: 10  # 防止 sampler 生成帧数目过短的 sign 垃圾数据
-# spatial settings
+    min_frames: 10
+
 spatial:
-  position_mode: random  # 插入的手语的位置
-  scale_range: [0.8, 1.2]  # 对于输入的sign video的缩放，注意是针对整段
-  allow_flip: false
-  blend_mode: alpha
+  sign_ops:
+    occlusion:
+      enabled: false
+      mode: patch
+      patch_size: 16
+      ratio: 0.25
+      fill: zero
+
+    depatch:
+      enabled: false
+      grid: [3, 4]
+      scatter_mode: random
+      keep_tile_size: true
+
+  transform:
+    scale_range: [0.8, 1.2]
+    allow_horizontal_flip: false
+    blend_mode: alpha
+
+  photometric:
+    on_sign:
+      color_jitter: false
+      gaussian_blur: false
+      random_resized_crop: false
+      horizontal_flip: false
+
+    on_background:
+      color_jitter: false
+      gaussian_blur: false
 
 renderer:
   enable_cache: true
-
-# 等 sampler 稳定后再放 retry_limit: 20
-# duration_mode: mins 是什么意思？最终世界的时间轴用用最短的那个？那不是反了吗？这怎么能对呢？
-# 配合的，我会进行什么
-

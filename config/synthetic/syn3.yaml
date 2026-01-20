@@ -1,0 +1,29 @@
+# config/synthetic/syn2.yaml
+# world settings
+seed: 42
+fps: 25
+# temporal settings
+temporal:
+  duration_mode: min
+  segment:
+    min_frames: 10  # 防止 sampler 生成帧数目过短的 sign 垃圾数据
+  sign快慢缩放：true
+  bg快慢缩放：true
+# spatial settings
+spatial:
+#  position_mode: random  # 插入的手语视频的位置。不需要，一律random
+  # 分割层
+  mask: true
+  depatch: true
+  figure_segment: bbox
+  # 变换层
+  scale_range: [0.8, 1.2]  # 对于输入的sign video的缩放，注意是针对整段
+  allow_flip: false
+  blend_mode: alpha  # alpha | replace | screen
+
+renderer:
+——？这部分是光学像素合成对吧，但是具体应该有哪些可以调整的？或者说有哪些需要避免的风险？
+
+# 等 sampler 稳定后再放 retry_limit: 20
+# duration_mode: mins 是什么意思？最终世界的时间轴用用最短的那个？那不是反了吗？这怎么能对呢？
+# 配合的，我会进行什么论文里写的消融实验。什么配置，变化什么。
