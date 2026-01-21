@@ -256,9 +256,7 @@ class TemporalComposer:
         return min(max(idx, 0), num_frames - 1)
 
 
-# ------------------------------------------------------------------
 # Test
-# ------------------------------------------------------------------
 if __name__ == "__main__":
     print("=== Testing TemporalComposer (v1) ===")
 

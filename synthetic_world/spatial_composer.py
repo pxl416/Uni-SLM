@@ -192,7 +192,8 @@ class SpatialComposer:
 
         canvas = bg_frame
         if self.output_size is not None:
-            W_out, H_out = self.output_size
+            # W_out, H_out = self.output_size
+            W_out, H_out = int(self.output_size[0]), int(self.output_size[1])
             if canvas.shape[:2] != (H_out, W_out):
                 canvas = cv2.resize(canvas, (W_out, H_out), interpolation=cv2.INTER_LINEAR)
         return canvas.copy()
