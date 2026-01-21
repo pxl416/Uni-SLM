@@ -88,8 +88,8 @@ class SpatialComposer:
 
     def __init__(
         self,
-        output_size: Optional[Tuple[int, int]] = None,     # (W,H); if None, keep bg size
-        position_mode: str = "random",                     # random | center_bottom | center | left_center | right_center
+        output_size: Optional[Tuple[int, int]] = None,
+        position_mode: str = "random",
         spatial_cfg: Optional[dict] = None,
         debug: bool = False,
     ):
@@ -98,7 +98,9 @@ class SpatialComposer:
         self.cfg = _parse_spatial_cfg(spatial_cfg)
         self.debug = debug
 
-        # Semantic placement policy (category -> position preset)
+        # 🔒 clip-level cache
+        self._clip_param_cache: Dict[str, Dict[str, Any]] = {}
+
         self.layout_policy = {
             "greeting": "center_bottom",
             "question": "right_center",
@@ -107,67 +109,68 @@ class SpatialComposer:
             "general": "center",
         }
 
-    # ------------------------------------------------------------------
+    def _sample_clip_params(self, rng: np.random.Generator) -> Dict[str, Any]:
+        lo, hi = self.cfg.scale_range
+        return {
+            "scale": float(rng.uniform(lo, hi)),
+            "hflip": self.cfg.allow_horizontal_flip and (rng.random() > 0.5),
+            # v1: position jitter 也在这里固定
+            "pos_jitter": (
+                int(rng.integers(-3, 4)),
+                int(rng.integers(-3, 4)),
+            ),
+        }
     # Public API
-    # ------------------------------------------------------------------
-
     def compose_frame(
         self,
         bg_frame: np.ndarray,
         sign_frames_info: List[Dict[str, Any]],
         rng: Optional[np.random.Generator] = None,
-    ) -> Tuple[np.ndarray, List[np.ndarray], List[Tuple[int, int, int, int]]]:
-        """
-        Args:
-            bg_frame: (H,W,3) RGB uint8
-            sign_frames_info: list of dicts. Each item should provide:
-                - "frame": sign frame, either RGB (H,W,3) or RGBA (H,W,4), uint8
-                - "category": optional semantic category for layout policy
-            rng: numpy Generator; supply clip-level rng for deterministic intra-clip behavior
-
-        Returns:
-            canvas: (H,W,3) uint8
-            masks:  List[(H,W) uint8] alpha masks for each sign after composition & cropping to canvas
-            bboxes: List[(x1,y1,x2,y2)] bbox from mask>0 for each sign
-        """
+    ):
         if rng is None:
             rng = np.random.default_rng()
 
         canvas = self._prepare_bg(bg_frame)
-
         H, W = canvas.shape[:2]
-        masks: List[np.ndarray] = []
-        bboxes: List[Tuple[int, int, int, int]] = []
+
+        masks, bboxes = [], []
 
         for info in sign_frames_info:
-            sign_frame = info.get("frame", None)
+            sign_frame = info.get("frame")
             if sign_frame is None:
                 masks.append(np.zeros((H, W), np.uint8))
                 bboxes.append((0, 0, 0, 0))
                 continue
 
+            sign_id = info.get("sign_id", "default")
             category = info.get("category", "general")
 
-            # 1) Prepare sign -> (rgb, alpha)
+            # 🔒 get or sample clip params
+            if sign_id not in self._clip_param_cache:
+                self._clip_param_cache[sign_id] = self._sample_clip_params(rng)
+            params = self._clip_param_cache[sign_id]
+
             rgb, alpha = self._prepare_sign(sign_frame)
 
-            # 2) sign_ops (only within alpha>0)
+            # sign_ops: still frame-level (OK)
             rgb, alpha = self._apply_sign_ops(rgb, alpha, rng)
 
-            # 3) transform (flip/scale)
-            rgb, alpha = self._apply_transform(rgb, alpha, rng)
+            # ✅ transform: clip-level
+            rgb, alpha = self._apply_transform(rgb, alpha, params)
 
-            # 4) position
+            # ✅ position: clip-level
             pos_mode = self.layout_policy.get(category, self.position_mode)
-            x, y = self._compute_position(rgb.shape[1], rgb.shape[0], W, H, pos_mode, rng)
+            x, y = self._compute_position(
+                rgb.shape[1], rgb.shape[0], W, H, pos_mode
+            )
+            dx, dy = params["pos_jitter"]
+            x, y = x + dx, y + dy
 
-            # 5) composite & produce per-sign mask + bbox
             canvas, mask_i, bbox_i = self._composite_one(canvas, rgb, alpha, x, y)
             masks.append(mask_i)
             bboxes.append(bbox_i)
 
         return canvas, masks, bboxes
-
     def compose_single(
         self,
         bg_frame: np.ndarray,
@@ -182,10 +185,7 @@ class SpatialComposer:
         )
         return comp, masks[0], bboxes[0]
 
-    # ------------------------------------------------------------------
     # Stage 0: background prep
-    # ------------------------------------------------------------------
-
     def _prepare_bg(self, bg_frame: np.ndarray) -> np.ndarray:
         if bg_frame.ndim != 3 or bg_frame.shape[2] != 3:
             raise ValueError(f"bg_frame must be (H,W,3) RGB uint8, got {bg_frame.shape}")
@@ -198,10 +198,7 @@ class SpatialComposer:
                 canvas = cv2.resize(canvas, (W_out, H_out), interpolation=cv2.INTER_LINEAR)
         return canvas.copy()
 
-    # ------------------------------------------------------------------
     # Stage 1: sign prep
-    # ------------------------------------------------------------------
-
     def _prepare_sign(self, sign_frame: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Returns:
@@ -224,10 +221,7 @@ class SpatialComposer:
         alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
         return rgb, alpha
 
-    # ------------------------------------------------------------------
     # Stage 2: sign_ops
-    # ------------------------------------------------------------------
-
     def _apply_sign_ops(
         self,
         rgb: np.ndarray,
@@ -424,42 +418,29 @@ class SpatialComposer:
         alpha2 = np.clip(alpha2, 0.0, 1.0).astype(np.float32)
         return rgb2, alpha2
 
-    # ------------------------------------------------------------------
     # Stage 3: transform (flip/scale)
-    # ------------------------------------------------------------------
-
     def _apply_transform(
         self,
         rgb: np.ndarray,
         alpha: np.ndarray,
-        rng: np.random.Generator,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        # flip
-        if self.cfg.allow_horizontal_flip and (rng.random() > 0.5):
+        params: Dict[str, Any],
+    ):
+        if params["hflip"]:
             rgb = cv2.flip(rgb, 1)
             alpha = cv2.flip(alpha, 1)
 
-        # scale
-        lo, hi = self.cfg.scale_range
-        scale = float(rng.uniform(lo, hi))
+        scale = params["scale"]
         h0, w0 = rgb.shape[:2]
         h1, w1 = int(round(h0 * scale)), int(round(w0 * scale))
 
-        if h1 <= 0 or w1 <= 0:
-            # degenerate
-            return rgb, alpha
-
-        if (h1, w1) != (h0, w0):
+        if h1 > 0 and w1 > 0 and (h1, w1) != (h0, w0):
             rgb = cv2.resize(rgb, (w1, h1), interpolation=cv2.INTER_LINEAR)
             alpha = cv2.resize(alpha, (w1, h1), interpolation=cv2.INTER_NEAREST)
 
         alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
         return rgb, alpha
 
-    # ------------------------------------------------------------------
     # Stage 4: compositing
-    # ------------------------------------------------------------------
-
     def _composite_one(
         self,
         canvas: np.ndarray,
@@ -526,19 +507,9 @@ class SpatialComposer:
         y_min, y_max = int(ys.min()), int(ys.max()) + 1
         return (x_min, y_min, x_max, y_max)
 
-    # ------------------------------------------------------------------
-    # Positioning
-    # ------------------------------------------------------------------
 
-    def _compute_position(
-        self,
-        w: int,
-        h: int,
-        W: int,
-        H: int,
-        mode: str,
-        rng: np.random.Generator,
-    ) -> Tuple[int, int]:
+    # Positioning
+    def _compute_position(self, w, h, W, H, mode):
         if mode == "center_bottom":
             return (W - w) // 2, H - h - 20
         if mode == "center":
@@ -548,16 +519,16 @@ class SpatialComposer:
         if mode == "left_center":
             return 20, (H - h) // 2
 
-        # random
         return (
-            int(rng.integers(0, max(1, W - w))),
-            int(rng.integers(0, max(1, H - h))),
+            (W - w) // 2,
+            (H - h) // 2,
         )
 
+    def clear_caches(self):
+        self._clip_param_cache.clear()
 
-# ------------------------------------------------------------------
+
 # TEST
-# ------------------------------------------------------------------
 if __name__ == "__main__":
     print("=== SpatialComposer v1 Pipeline Test ===")
     rng = np.random.default_rng(42)

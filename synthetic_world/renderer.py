@@ -10,10 +10,7 @@ from synthetic_world.temporal_composer import TemporalComposer
 from synthetic_world.spatial_composer import SpatialComposer
 
 
-# ============================================================
 # Render Result
-# ============================================================
-
 @dataclass
 class RenderResult:
     """
@@ -27,10 +24,7 @@ class RenderResult:
     timeline: Any                                  # original world timeline
 
 
-# ============================================================
 # World Renderer
-# ============================================================
-
 class WorldRenderer:
     """
     WorldRenderer = Temporal → Spatial → Video + Labels

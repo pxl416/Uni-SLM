@@ -140,8 +140,57 @@ class TemporalComposer:
             }
 
     def compose(self, timeline: Any) -> List[Dict[str, Any]]:
-        """Materialize all frame instructions (debug / analysis only)."""
-        return list(self.iter_frames(timeline))
+        """
+        Materialize all frame instructions.
+
+        v1 SAFETY:
+          - If timeline has segments but no active_signs are produced,
+            fallback to naive second-to-frame mapping.
+        """
+        frames = list(self.iter_frames(timeline))
+
+        # ------------------ v1 SAFETY CHECK ------------------
+        segments = self._get_segments(timeline)
+        has_segments = len(segments) > 0
+        has_active = any(len(f.get("active_signs", [])) > 0 for f in frames)
+
+        if has_segments and not has_active:
+            print(
+                "[TemporalComposer WARNING] segments exist but no active_signs produced. "
+                "Falling back to v1 naive temporal mapping."
+            )
+
+            fps = self.fps
+
+            # recompute active_signs naively
+            for f in frames:
+                t = f.get("timestamp", None)
+                if t is None:
+                    continue
+
+                active = []
+                for seg in segments:
+                    start_sec, end_sec = self._get_seg_time(seg)
+                    if start_sec <= t < end_sec:
+                        sign = self._get_seg_sign(seg)
+                        if sign is None:
+                            continue
+
+                        asset_frame_idx = int((t - start_sec) * fps)
+
+                        active.append({
+                            "sign": sign,
+                            "asset_frame_idx": asset_frame_idx,
+                            "start_sec": start_sec,
+                            "end_sec": end_sec,
+                            "text": getattr(sign, "text", ""),
+                            "gloss": getattr(sign, "gloss", []),
+                            "category": getattr(sign, "semantic_category", "unknown"),
+                        })
+
+                f["active_signs"] = active
+
+        return frames
 
     def temporal_gt(self, timeline: Any, total_frames: Optional[int] = None) -> np.ndarray:
         """Binary temporal GT: 1 if any sign active, else 0."""
@@ -217,15 +266,26 @@ class TemporalComposer:
             return list(timeline.segments)
         return []
 
-    def _get_seg_time(self, seg: Dict[str, Any]) -> Tuple[float, float]:
-        if "start_sec" in seg and "end_sec" in seg:
-            return float(seg["start_sec"]), float(seg["end_sec"])
-        if "start" in seg and "end" in seg:
-            return float(seg["start"]), float(seg["end"])
-        raise KeyError(f"Segment missing time keys: {list(seg.keys())}")
+    def _get_seg_time(self, seg) -> Tuple[float, float]:
+        # --- dataclass TimelineSegment ---
+        if hasattr(seg, "start_sec") and hasattr(seg, "end_sec"):
+            return float(seg.start_sec), float(seg.end_sec)
 
-    def _get_seg_sign(self, seg: Dict[str, Any]):
-        return seg.get("sign", None)
+        # --- dict (legacy / loader style) ---
+        if isinstance(seg, dict):
+            if "start_sec" in seg and "end_sec" in seg:
+                return float(seg["start_sec"]), float(seg["end_sec"])
+            if "start" in seg and "end" in seg:
+                return float(seg["start"]), float(seg["end"])
+
+        raise KeyError(f"Segment missing time fields: {seg}")
+
+    def _get_seg_sign(self, seg):
+        if hasattr(seg, "sign"):
+            return seg.sign
+        if isinstance(seg, dict):
+            return seg.get("sign", None)
+        return None
 
     def _sample_rate(self, enabled: bool, rate_range: Tuple[float, float]) -> float:
         if not enabled:

@@ -334,7 +334,194 @@ def main1():
         import traceback
         traceback.print_exc()
 
+def main2():
+    """
+    v1-aligned audit entry:
+    Real assets → WorldSampler → TimelinePlanner → Renderer → LabelEmitter → VideoAuditor
+    """
+    print("=== Real Data Audit (v1 aligned) ===")
+    print(f"CSL path: {CSL_ROOT}")
+    print(f"UCF path: {UCF_ROOT}")
+    print("=" * 60)
+
+    try:
+        # --------------------------------------------------
+        # 1) Load assets
+        # --------------------------------------------------
+        print("\n[1] Loading assets...")
+
+        from synthetic_world.loaders.csl_daily import load_csl_daily_as_assets_v1
+        from synthetic_world.loaders.ucf101 import load_ucf101_as_assets_v1
+        from synthetic_world.timeline import TimelinePlanner
+
+        signs = load_csl_daily_as_assets_v1(
+            root=CSL_ROOT,
+            rgb_dir="sentence",
+            anno_pkl="sentence_label/csl2020ct_v2.pkl",
+            split_file="sentence_label/split_1_train.txt",
+            max_samples=30,
+            verbose=True,
+        )
+        bgs = load_ucf101_as_assets_v1(
+            root=UCF_ROOT,
+            max_samples=10,
+            verbose=True,
+        )
+
+        print(f"  ✓ Signs: {len(signs)}")
+        print(f"  ✓ Backgrounds: {len(bgs)}")
+
+        # --------------------------------------------------
+        # 2) Build AssetPool
+        # --------------------------------------------------
+        print("\n[2] Building asset pool...")
+        pool = AssetPool()
+        for s in signs:
+            # 你之前 pool.add_sign(asset, category=...) 也可以，这里用最简
+            pool.add_sign(s, category=getattr(s, "semantic_category", "unknown"))
+        for b in bgs:
+            pool.add_background(b)
+
+        print("  ✓ Pool summary:", pool.summary())
+
+        # --------------------------------------------------
+        # 3) WorldSampler (abstract plan)
+        # --------------------------------------------------
+        print("\n[3] Creating WorldSampler...")
+        sampler = WorldSampler(
+            pool=pool,
+            min_signs=1,
+            max_signs=3,
+        )
+
+        # --------------------------------------------------
+        # 4) TimelinePlanner
+        # --------------------------------------------------
+        print("\n[4] Creating TimelinePlanner...")
+        planner = TimelinePlanner(
+            target_duration=6.0,    # seconds
+            allow_overlap=False,
+        )
+
+        # --------------------------------------------------
+        # 5) Renderer
+        # --------------------------------------------------
+        print("\n[5] Creating renderer...")
+        renderer = WorldRenderer(
+            output_size=(320, 240),
+            fps=15,
+            seed=42,
+            # 你要限制 sign 的 jitter 在 0.95~1.05，可以在 spatial_config 里传给 SpatialComposer
+            # spatial_config={"spatial_cfg": {...}} 视你 _parse_spatial_cfg 的接口而定
+        )
+
+        # --------------------------------------------------
+        # 6) Sample plan → concrete timeline
+        # --------------------------------------------------
+        print("\n[6] Sampling world...")
+        plan = sampler.sample_world()
+
+        timeline = planner.plan(
+            background=plan.background,
+            signs=plan.signs,
+        )
+
+        # 打印 segments（兼容 dataclass / dict）
+        segs = getattr(timeline, "segments", None)
+        if segs is None:
+            segs = getattr(timeline, "sign_segments", [])
+        segs = list(segs or [])
+
+        print(f"  Background: {getattr(timeline.background, 'asset_id', 'unknown')}")
+        print(f"  Num sign segments: {len(segs)}")
+
+        for i, seg in enumerate(segs):
+            if isinstance(seg, dict):
+                sign = seg.get("sign", None)
+                s0 = float(seg.get("start_sec", seg.get("start_time", seg.get("start", 0.0))))
+                s1 = float(seg.get("end_sec", seg.get("end_time", seg.get("end", 0.0))))
+            else:
+                sign = getattr(seg, "sign", None)
+                s0 = float(getattr(seg, "start_sec", getattr(seg, "start_time", getattr(seg, "start", 0.0))))
+                s1 = float(getattr(seg, "end_sec", getattr(seg, "end_time", getattr(seg, "end", 0.0))))
+
+            sid = getattr(sign, "asset_id", "unknown_sign") if sign is not None else "None"
+            print(f"  Segment {i}: {sid} | {s0:.2f}s → {s1:.2f}s")
+
+        # --------------------------------------------------
+        # 7) Render
+        # --------------------------------------------------
+        print("\n[7] Rendering...")
+        render_result = renderer.render(timeline, clear_cache=True)
+
+        T = int(render_result.rgb.shape[0])
+        print(f"  Frames: {T}")
+        print(f"  Frames with sign: {int(render_result.temporal_gt.sum())} / {len(render_result.temporal_gt)}")
+
+        # --------------------------------------------------
+        # 8) Emit labels (v1)
+        # --------------------------------------------------
+        print("\n[8] Emitting labels...")
+        emitter = LabelEmitter(include_masks=True)
+
+        labels = emitter.emit_from_render_result(
+            render_result=render_result,
+            fps=renderer.fps,
+        )
+
+        print(f"  ✓ Segments: {int(labels.segment_spans.shape[0])}")
+        print(f"  ✓ Vocabulary size: {len(labels.vocabulary)}")
+        print("  DEBUG spans:", labels.segment_spans)
+
+        # ✅ 关键：必须挂回去，否则 auditor 读不到 segment_spans
+        render_result.labels = labels
+
+        # --------------------------------------------------
+        # 9) Audit
+        # --------------------------------------------------
+        print("\n[9] Auditing...")
+        auditor = VideoAuditor(output_dir="./audit_real_v1")
+        outputs = auditor.audit_render_result(
+            render_result,
+            base_name="real_v1_sample",
+            fps=renderer.fps,
+        )
+
+        print("\n=== AUDIT COMPLETE ===")
+        for k, v in outputs.items():
+            if v:
+                print(f"  {k}: {v}")
+
+        # --------------------------------------------------
+        # 10) Save sanity-check artifacts
+        # --------------------------------------------------
+        print("\n[10] Saving sanity-check artifacts...")
+        import cv2
+
+        if T > 0:
+            cv2.imwrite(
+                "./audit_real_v1/first_frame.jpg",
+                cv2.cvtColor(render_result.rgb[0], cv2.COLOR_RGB2BGR),
+            )
+            print("  ✓ first_frame.jpg")
+
+            # 保存第一帧的第一个 mask（如果有）
+            if getattr(render_result, "spatial_masks", None):
+                if len(render_result.spatial_masks) > 0 and len(render_result.spatial_masks[0]) > 0:
+                    cv2.imwrite("./audit_real_v1/first_mask.png", render_result.spatial_masks[0][0])
+                    print("  ✓ first_mask.png")
+
+        print("\nAll done. Check ./audit_real_v1/")
+
+    except Exception as e:
+        print("\n❌ ERROR:", e)
+        import traceback
+        traceback.print_exc()
+
+
+
 
 if __name__ == "__main__":
     # main()
-    main1()
+    # main1()
+    main2()

@@ -6,6 +6,7 @@ from typing import Dict, Any
 
 from synthetic_world.world_sampler import WorldSampler
 from synthetic_world.renderer import WorldRenderer
+from synthetic_world.timeline import TimelinePlanner
 
 
 class SignWorldStream(Dataset):
@@ -43,17 +44,28 @@ class SignWorldStream(Dataset):
 
         self.max_worlds = max_worlds
 
+        self.timeline_planner = TimelinePlanner(
+            target_duration=None,      # 或者一个 float
+            allow_overlap=False,
+        )
+
     def __len__(self):
         return self.max_worlds
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        # 1. Sample a world plan
-        timeline = self.sampler.sample_world()
+        # 1. Sample abstract world
+        plan = self.sampler.sample_world()
 
-        # 2. Render
+        # 2. Plan timeline  ✅ 新增
+        timeline = self.timeline_planner.plan(
+            background=plan.background,
+            signs=plan.signs,
+        )
+
+        # 3. Render timeline
         result = self.renderer.render(timeline)
 
-        # 3. Convert to torch
+        # 4. Convert to torch
         rgb = (
             torch.from_numpy(result.rgb)
             .permute(0, 3, 1, 2)
@@ -125,9 +137,18 @@ if __name__ == "__main__":
     segments = getattr(timeline, "segments", getattr(timeline, "sign_segments", []))
     print("Segments:")
     for seg in segments:
+        if hasattr(seg, "sign"):
+            sign = seg.sign
+            start = seg.start_sec
+            end = seg.end_sec
+        else:  # legacy dict
+            sign = seg["sign"]
+            start = seg["start_sec"]
+            end = seg["end_sec"]
+
         print(
-            f"  {seg['sign'].asset_id}: "
-            f"{seg['start_sec']:.2f}s → {seg['end_sec']:.2f}s"
+            f"  {sign.asset_id}: "
+            f"{start:.2f}s → {end:.2f}s"
         )
 
     print("\nSignWorldStream v1 test passed ✔")

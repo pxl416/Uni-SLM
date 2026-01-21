@@ -29,9 +29,17 @@ spatial:
       keep_tile_size: true
 
   transform:
-    scale_range: [0.8, 1.2]
-    allow_horizontal_flip: false
-    blend_mode: alpha
+    scale_jitter: true
+    scale_range: [0.95, 1.05]
+    translate_jitter: true
+    translate_frac: [0.00, 0.01]   # 很小的平移（相对 frame 尺寸）
+    rotate_jitter: false           # v1 建议先关掉
+    hflip_prob: 0.0                # 或非常小
+    brightness: [ -0.03, 0.03 ]
+    contrast: [ 0.97, 1.03 ]
+    saturation: [ 0.97, 1.03 ]
+    hue: [ -0.01, 0.01 ]
+    gamma: [ 0.97, 1.03 ]
 
   photometric:
     on_sign:
