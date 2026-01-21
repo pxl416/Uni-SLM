@@ -3,21 +3,21 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
+import random
 
 
 class TemporalComposer:
     """
-    Convert a WorldTimeline into per-frame instructions.
+    Convert a WorldTimeline into per-frame temporal instructions.
     Temporal only. No pixel ops.
 
-    Recommended API:
-        for ins in composer.iter_frames(timeline):
-            ...
+    Responsibilities:
+      - timeline duration resolution
+      - sign / background rate jitter
+      - world-time -> asset-frame mapping
+      - temporal GT & spans
 
-    Also provides:
-        compose(timeline) -> List[Dict]  (materializes all frames, use only for debug)
-        temporal_gt(timeline) -> np.ndarray (T,) float32
-        spans(timeline) -> np.ndarray (N,2) int64 (start_frame, end_frame)
+    This module is intentionally stateless and side-effect free.
     """
 
     def __init__(
@@ -25,41 +25,35 @@ class TemporalComposer:
         fps: int = 25,
         loop_background: bool = False,
         duration_mode: str = "min",  # "min" | "background" | "target"
+        temporal_cfg: Optional[dict] = None,
+        debug: bool = False,
     ):
-        """
-        Args:
-            fps: world fps
-            loop_background: if True, background frame idx wraps around.
-                             if False, clamp to last frame.
-            duration_mode:
-                - "min":    total duration = min(background.duration, config.target_duration if exists else bg.duration)
-                - "background": total duration = background.duration
-                - "target": total duration = timeline.config['target_duration'] (fallback to background.duration)
-        """
         self.fps = int(fps)
         self.loop_background = bool(loop_background)
         assert duration_mode in ("min", "background", "target")
         self.duration_mode = duration_mode
 
-    # ---------- public ----------
+        self.temporal_cfg = temporal_cfg or {}
+        self.debug = debug
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def iter_frames(self, timeline: Any) -> Iterable[Dict[str, Any]]:
         """
-        Yield per-frame instructions.
+        Yield per-frame temporal instructions.
 
         Each yielded dict:
             {
               "frame_idx": int,
               "timestamp": float,
-              "background": {
-                  "asset": BackgroundAsset,
-                  "frame_idx": int,
-              },
+              "bg_asset": BackgroundAsset,
+              "bg_frame_idx": int,
               "active_signs": [
                   {
                     "sign": SignAsset,
-                    "asset_frame_idx": int,   # sign's own frame index
-                    "segment": dict,          # raw segment dict
+                    "asset_frame_idx": int,
                     "start_sec": float,
                     "end_sec": float,
                     "text": str,
@@ -69,78 +63,94 @@ class TemporalComposer:
               ],
             }
         """
+        self._validate_timeline(timeline)
+
         bg = timeline.background
         segs = self._get_segments(timeline)
-
         total_frames = self._get_total_frames(timeline)
 
-        # Pre-normalize segments: (start_sec, end_sec, sign, payload)
+        # ---- sample rate jitters once per timeline ----
+        sign_rate = self._sample_rate(
+            enabled=self.temporal_cfg.get("sign_rate_jitter", False),
+            rate_range=self.temporal_cfg.get("sign_rate_range", (1.0, 1.0)),
+        )
+        bg_rate = self._sample_rate(
+            enabled=self.temporal_cfg.get("bg_rate_jitter", False),
+            rate_range=self.temporal_cfg.get("bg_rate_range", (1.0, 1.0)),
+        )
+
+        if self.debug:
+            print(f"[TemporalComposer] sign_rate={sign_rate:.3f}, bg_rate={bg_rate:.3f}")
+
+        # ---- normalize segments ----
         norm = []
         for seg in segs:
             start_sec, end_sec = self._get_seg_time(seg)
             if end_sec <= start_sec:
                 continue
             sign = self._get_seg_sign(seg)
-            # allow segments without sign (should not happen, but keep robust)
             if sign is None:
                 continue
-            norm.append((float(start_sec), float(end_sec), sign, seg))
+            norm.append((float(start_sec), float(end_sec), sign))
 
-        # Optional: sort by start time
         norm.sort(key=lambda x: x[0])
+
+        bg_num_frames = int(getattr(bg, "num_frames", getattr(bg, "T", 0)) or 1)
 
         for frame_idx in range(total_frames):
             timestamp = frame_idx / self.fps
 
-            # background frame index
+            # ---- background frame index ----
+            bg_t = timestamp * bg_rate
+            bg_frame_idx = int(np.floor(bg_t * self.fps))
+
             if self.loop_background:
-                bg_frame_idx = frame_idx % int(getattr(bg, "num_frames", getattr(bg, "T", 0)) or 1)
+                bg_frame_idx = bg_frame_idx % bg_num_frames
             else:
-                bg_nf = int(getattr(bg, "num_frames", getattr(bg, "T", 0)) or 1)
-                bg_frame_idx = min(frame_idx, max(bg_nf - 1, 0))
+                bg_frame_idx = min(bg_frame_idx, bg_num_frames - 1)
 
             active_signs = []
-            for (start_sec, end_sec, sign, seg_raw) in norm:
+
+            for (start_sec, end_sec, sign) in norm:
                 if start_sec <= timestamp < end_sec:
                     asset_frame_idx = self._map_world_time_to_sign_frame(
                         timestamp=timestamp,
                         start_sec=start_sec,
                         end_sec=end_sec,
                         sign=sign,
+                        rate=sign_rate,
                     )
 
                     active_signs.append({
                         "sign": sign,
                         "asset_frame_idx": asset_frame_idx,
-                        "segment": seg_raw,
                         "start_sec": start_sec,
                         "end_sec": end_sec,
-                        "text": getattr(sign, "text", seg_raw.get("text", "")),
-                        "gloss": getattr(sign, "gloss", seg_raw.get("gloss", [])),
-                        "category": getattr(sign, "semantic_category", seg_raw.get("category", "unknown")),
+                        "text": getattr(sign, "text", ""),
+                        "gloss": getattr(sign, "gloss", []),
+                        "category": getattr(sign, "semantic_category", "unknown"),
                     })
 
             yield {
                 "frame_idx": frame_idx,
                 "timestamp": timestamp,
+                "bg_asset": bg,
                 "bg_frame_idx": bg_frame_idx,
-                "bg_asset": timeline.background,  # ← 加
                 "active_signs": active_signs,
             }
 
     def compose(self, timeline: Any) -> List[Dict[str, Any]]:
-        """Materialize all frame instructions (debug only)."""
+        """Materialize all frame instructions (debug / analysis only)."""
         return list(self.iter_frames(timeline))
 
     def temporal_gt(self, timeline: Any, total_frames: Optional[int] = None) -> np.ndarray:
-        """Binary temporal GT: 1 if any sign active at frame, else 0."""
+        """Binary temporal GT: 1 if any sign active, else 0."""
         if total_frames is None:
             total_frames = self._get_total_frames(timeline)
 
         gt = np.zeros((total_frames,), dtype=np.float32)
 
-        segs = self._get_segments(timeline)
-        for seg in segs:
+        for seg in self._get_segments(timeline):
             start_sec, end_sec = self._get_seg_time(seg)
             if end_sec <= start_sec:
                 continue
@@ -150,13 +160,11 @@ class TemporalComposer:
             e = max(0, min(e, total_frames))
             if e > s:
                 gt[s:e] = 1.0
+
         return gt
 
     def spans(self, timeline: Any, total_frames: Optional[int] = None) -> np.ndarray:
-        """
-        Return spans (N,2): [start_frame, end_frame) for each sign segment.
-        Useful for label_emitter / detection style losses.
-        """
+        """Return spans (N,2): [start_frame, end_frame)."""
         if total_frames is None:
             total_frames = self._get_total_frames(timeline)
 
@@ -172,11 +180,15 @@ class TemporalComposer:
             if e > s:
                 spans.append((s, e))
 
-        if not spans:
-            return np.zeros((0, 2), dtype=np.int64)
-        return np.array(spans, dtype=np.int64)
+        return np.array(spans, dtype=np.int64) if spans else np.zeros((0, 2), dtype=np.int64)
 
-    # ---------- internals ----------
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _validate_timeline(self, timeline: Any):
+        if not hasattr(timeline, "background"):
+            raise ValueError("Timeline must have attribute `background`")
 
     def _get_total_frames(self, timeline: Any) -> int:
         bg = timeline.background
@@ -192,45 +204,34 @@ class TemporalComposer:
         elif self.duration_mode == "target":
             dur = float(target) if target is not None else bg_dur
         else:  # "min"
-            if target is None:
-                dur = bg_dur
-            else:
-                dur = min(bg_dur, float(target))
+            dur = min(bg_dur, float(target)) if target is not None else bg_dur
 
         dur = max(dur, 0.0)
         total = int(np.round(dur * self.fps))
         return max(total, 1)
 
     def _get_segments(self, timeline: Any) -> List[Dict[str, Any]]:
-        # compatible fields: segments / sign_segments
         if hasattr(timeline, "sign_segments"):
-            segs = getattr(timeline, "sign_segments")
-        else:
-            segs = getattr(timeline, "segments", [])
-
-        # Some samplers store segments under timeline.timeline
-        if segs is None and hasattr(timeline, "timeline"):
-            segs = getattr(timeline, "timeline")
-
-        return list(segs) if segs is not None else []
+            return list(timeline.sign_segments)
+        if hasattr(timeline, "segments"):
+            return list(timeline.segments)
+        return []
 
     def _get_seg_time(self, seg: Dict[str, Any]) -> Tuple[float, float]:
-        # compatible keys: start_sec/end_sec or start_time/end_time or start/end
         if "start_sec" in seg and "end_sec" in seg:
             return float(seg["start_sec"]), float(seg["end_sec"])
-        if "start_time" in seg and "end_time" in seg:
-            return float(seg["start_time"]), float(seg["end_time"])
         if "start" in seg and "end" in seg:
             return float(seg["start"]), float(seg["end"])
         raise KeyError(f"Segment missing time keys: {list(seg.keys())}")
 
     def _get_seg_sign(self, seg: Dict[str, Any]):
-        # compatible keys: sign / asset
-        if "sign" in seg:
-            return seg["sign"]
-        if "asset" in seg:
-            return seg["asset"]
-        return None
+        return seg.get("sign", None)
+
+    def _sample_rate(self, enabled: bool, rate_range: Tuple[float, float]) -> float:
+        if not enabled:
+            return 1.0
+        lo, hi = rate_range
+        return float(random.uniform(lo, hi))
 
     def _map_world_time_to_sign_frame(
         self,
@@ -238,34 +239,28 @@ class TemporalComposer:
         start_sec: float,
         end_sec: float,
         sign: Any,
+        rate: float,
     ) -> int:
-        """
-        Map current world timestamp to sign's internal frame index.
-
-        Strategy (robust):
-            ratio = (t - start) / (end - start)
-            idx = floor(ratio * sign.num_frames)
-            clamp to [0, num_frames-1]
-        """
+        safe_rate = max(abs(rate), 1e-3)
         seg_dur = max(end_sec - start_sec, 1e-6)
-        ratio = (timestamp - start_sec) / seg_dur
-        ratio = max(0.0, min(1.0, ratio))
+        eff_dur = seg_dur / safe_rate
+
+        ratio = (timestamp - start_sec) / eff_dur
+        ratio = np.clip(ratio, 0.0, 1.0)
 
         num_frames = int(getattr(sign, "num_frames", getattr(sign, "T", 0)) or 0)
         if num_frames <= 0:
             return 0
 
-        idx = int(np.floor(ratio * num_frames))
-        if idx >= num_frames:
-            idx = num_frames - 1
-        if idx < 0:
-            idx = 0
-        return idx
+        idx = int(np.floor(ratio * (num_frames - 1e-6)))
+        return min(max(idx, 0), num_frames - 1)
 
 
-# ----------------- Test -----------------
+# ------------------------------------------------------------------
+# Test
+# ------------------------------------------------------------------
 if __name__ == "__main__":
-    print("=== Testing TemporalComposer ===")
+    print("=== Testing TemporalComposer (v1) ===")
 
     from dataclasses import dataclass
 
@@ -291,8 +286,7 @@ if __name__ == "__main__":
         config: dict
 
     bg = MockBG("bg", num_frames=100, duration=4.0)
-
-    s1 = MockSign("s1", "hello", ["HELLO"], num_frames=50, duration=2.0)
+    s1 = MockSign("s1", "hello", ["HELLO"], num_frames=40, duration=2.0)
     s2 = MockSign("s2", "thanks", ["THANKS"], num_frames=30, duration=1.5)
 
     tl = MockTimeline(
@@ -304,30 +298,37 @@ if __name__ == "__main__":
         config={"target_duration": 4.0},
     )
 
-    composer = TemporalComposer(fps=25, loop_background=False, duration_mode="min")
+    composer = TemporalComposer(
+        fps=25,
+        duration_mode="min",
+        temporal_cfg={
+            "sign_rate_jitter": True,
+            "sign_rate_range": (0.9, 1.1),
+            "bg_rate_jitter": True,
+            "bg_rate_range": (0.95, 1.05),
+        },
+        debug=True,
+    )
 
-    # generator test
-    frames = list(composer.iter_frames(tl))
-    print("Total frames:", len(frames))
+    frames = composer.compose(tl)
+    print(f"Total frames: {len(frames)}")
 
-    # check key frames
-    for k in [0, 12, 25, 50, 75, 90]:
-        if k >= len(frames):
-            continue
-        ins = frames[k]
-        act = ins["active_signs"]
-        print(
-            f"Frame {k:3d} t={ins['timestamp']:.2f}s  "
-            f"bg={ins['bg_frame_idx']:3d}  active={len(act)}"
-        )
+    # ---- sanity checks ----
+    assert len(frames) > 0
 
-        for a in act:
-            print("   ", a["sign"].asset_id, a["asset_frame_idx"], a["text"])
+    last_idx = {}
+    for f in frames:
+        for a in f["active_signs"]:
+            sid = a["sign"].asset_id
+            idx = a["asset_frame_idx"]
+            if sid in last_idx:
+                assert idx >= last_idx[sid] - 1
+            last_idx[sid] = idx
 
     gt = composer.temporal_gt(tl)
-    sp = composer.spans(tl)
+    spans = composer.spans(tl)
 
-    print("temporal_gt:", gt.shape, "pos_frames=", float(gt.sum()))
-    print("spans:", sp.shape, sp)
+    print("temporal_gt sum:", int(gt.sum()))
+    print("spans:", spans)
 
-    print("Test passed ✔")
+    print("TemporalComposer v1 test passed ✔")

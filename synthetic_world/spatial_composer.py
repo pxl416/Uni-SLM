@@ -1,30 +1,104 @@
 # synthetic_world/spatial_composer.py
 from __future__ import annotations
-from typing import Tuple, Dict, Any, Optional, List
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import cv2
 
 
+@dataclass
+class SpatialConfig:
+    """Parsed v1 spatial config (with safe defaults)."""
+    # pipeline stages
+    occlusion_enabled: bool = False
+    occlusion_mode: str = "patch"          # patch | block | random_pixels
+    occlusion_patch_size: int = 16
+    occlusion_ratio: float = 0.25
+    occlusion_fill: str = "zero"           # zero | mean | random
+
+    depatch_enabled: bool = False
+    depatch_grid: Tuple[int, int] = (3, 4)  # (rows, cols)
+    depatch_scatter_mode: str = "random"    # random | permute
+    depatch_keep_tile_size: bool = True
+
+    scale_range: Tuple[float, float] = (0.8, 1.2)
+    allow_horizontal_flip: bool = False
+    blend_mode: str = "alpha"              # alpha | replace | screen
+
+    # v1 photometric toggles (kept but default off)
+    photometric_on_sign: Dict[str, bool] = None
+    photometric_on_background: Dict[str, bool] = None
+
+
+def _parse_spatial_cfg(cfg: Optional[dict]) -> SpatialConfig:
+    """Parse YAML-like dict into SpatialConfig with defaults."""
+    sc = SpatialConfig()
+    if not cfg:
+        sc.photometric_on_sign = {}
+        sc.photometric_on_background = {}
+        return sc
+
+    sign_ops = cfg.get("sign_ops", {}) if isinstance(cfg, dict) else {}
+    occ = sign_ops.get("occlusion", {}) if isinstance(sign_ops, dict) else {}
+    dep = sign_ops.get("depatch", {}) if isinstance(sign_ops, dict) else {}
+
+    transform = cfg.get("transform", {}) if isinstance(cfg, dict) else {}
+    photo = cfg.get("photometric", {}) if isinstance(cfg, dict) else {}
+
+    sc.occlusion_enabled = bool(occ.get("enabled", sc.occlusion_enabled))
+    sc.occlusion_mode = str(occ.get("mode", sc.occlusion_mode))
+    sc.occlusion_patch_size = int(occ.get("patch_size", sc.occlusion_patch_size))
+    sc.occlusion_ratio = float(occ.get("ratio", sc.occlusion_ratio))
+    sc.occlusion_fill = str(occ.get("fill", sc.occlusion_fill))
+
+    sc.depatch_enabled = bool(dep.get("enabled", sc.depatch_enabled))
+    grid = dep.get("grid", list(sc.depatch_grid))
+    if isinstance(grid, (list, tuple)) and len(grid) == 2:
+        sc.depatch_grid = (int(grid[0]), int(grid[1]))
+    sc.depatch_scatter_mode = str(dep.get("scatter_mode", sc.depatch_scatter_mode))
+    sc.depatch_keep_tile_size = bool(dep.get("keep_tile_size", sc.depatch_keep_tile_size))
+
+    sr = transform.get("scale_range", list(sc.scale_range))
+    if isinstance(sr, (list, tuple)) and len(sr) == 2:
+        sc.scale_range = (float(sr[0]), float(sr[1]))
+    sc.allow_horizontal_flip = bool(transform.get("allow_horizontal_flip", sc.allow_horizontal_flip))
+    sc.blend_mode = str(transform.get("blend_mode", sc.blend_mode))
+
+    sc.photometric_on_sign = dict(photo.get("on_sign", {}) or {})
+    sc.photometric_on_background = dict(photo.get("on_background", {}) or {})
+    return sc
+
+
 class SpatialComposer:
     """
-    Geometry-safe spatial composer.
-    Guarantees mask, bbox, alpha consistency.
+    SpatialComposer v1 (refactored pipeline).
+    Goals:
+      - Geometry-safe: alpha/mask/bbox consistency
+      - v1 pipeline stages:
+          sign_ops (occlusion/depatch) -> transform (flip/scale/pos/blend) -> photometric (disabled by default)
+      - By default (all disabled), behavior matches a simple alpha blend compositor.
+      - All sign_ops are applied ONLY within sign alpha mask region.
+
+    Notes:
+      - output_size is the final canvas size (W,H), usually aligned with your bg input size.
+      - This module does not do temporal logic; it composes one frame at a time.
     """
 
     def __init__(
         self,
-        output_size: Tuple[int, int] = (224, 224),   # (W,H)
-        position_mode: str = "random",             # random | center_bottom | grid
-        scale_range: Tuple[float, float] = (0.8, 1.2),
-        allow_flip: bool = False,
-        blend_mode: str = "alpha",                  # alpha | replace | screen
+        output_size: Optional[Tuple[int, int]] = None,     # (W,H); if None, keep bg size
+        position_mode: str = "random",                     # random | center_bottom | center | left_center | right_center
+        spatial_cfg: Optional[dict] = None,
+        debug: bool = False,
     ):
         self.output_size = output_size
         self.position_mode = position_mode
-        self.scale_range = scale_range
-        self.allow_flip = allow_flip
-        self.blend_mode = blend_mode
+        self.cfg = _parse_spatial_cfg(spatial_cfg)
+        self.debug = debug
 
+        # Semantic placement policy (category -> position preset)
         self.layout_policy = {
             "greeting": "center_bottom",
             "question": "right_center",
@@ -33,121 +107,437 @@ class SpatialComposer:
             "general": "center",
         }
 
-    # ----------------------------------------------------
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def compose_frame(
         self,
         bg_frame: np.ndarray,
         sign_frames_info: List[Dict[str, Any]],
         rng: Optional[np.random.Generator] = None,
-    ):
+    ) -> Tuple[np.ndarray, List[np.ndarray], List[Tuple[int, int, int, int]]]:
+        """
+        Args:
+            bg_frame: (H,W,3) RGB uint8
+            sign_frames_info: list of dicts. Each item should provide:
+                - "frame": sign frame, either RGB (H,W,3) or RGBA (H,W,4), uint8
+                - "category": optional semantic category for layout policy
+            rng: numpy Generator; supply clip-level rng for deterministic intra-clip behavior
+
+        Returns:
+            canvas: (H,W,3) uint8
+            masks:  List[(H,W) uint8] alpha masks for each sign after composition & cropping to canvas
+            bboxes: List[(x1,y1,x2,y2)] bbox from mask>0 for each sign
+        """
         if rng is None:
             rng = np.random.default_rng()
 
-        W, H = self.output_size
-        if bg_frame.shape[:2] != (H, W):
-            bg_frame = cv2.resize(bg_frame, (W, H))
+        canvas = self._prepare_bg(bg_frame)
 
-        canvas = bg_frame.copy()
-        masks = []
-        bboxes = []
+        H, W = canvas.shape[:2]
+        masks: List[np.ndarray] = []
+        bboxes: List[Tuple[int, int, int, int]] = []
 
         for info in sign_frames_info:
-            sign = info["frame"]
+            sign_frame = info.get("frame", None)
+            if sign_frame is None:
+                masks.append(np.zeros((H, W), np.uint8))
+                bboxes.append((0, 0, 0, 0))
+                continue
+
             category = info.get("category", "general")
 
-            # -------------------------
-            # 1. Flip
-            if self.allow_flip and rng.random() > 0.5:
-                sign = cv2.flip(sign, 1)
+            # 1) Prepare sign -> (rgb, alpha)
+            rgb, alpha = self._prepare_sign(sign_frame)
 
-            # -------------------------
-            # 2. Resize
-            scale = rng.uniform(*self.scale_range)
-            h0, w0 = sign.shape[:2]
-            h1, w1 = int(h0 * scale), int(w0 * scale)
-            if h1 <= 0 or w1 <= 0:
-                masks.append(np.zeros((H, W), np.uint8))
-                bboxes.append((0, 0, 0, 0))
-                continue
-            sign = cv2.resize(sign, (w1, h1))
+            # 2) sign_ops (only within alpha>0)
+            rgb, alpha = self._apply_sign_ops(rgb, alpha, rng)
 
-            # -------------------------
-            # 3. Alpha + RGB
-            if sign.shape[2] == 4:
-                rgb = sign[:, :, :3]
-                alpha = sign[:, :, 3].astype(np.float32) / 255.0
-            else:
-                rgb = sign
-                gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-                _, a = cv2.threshold(gray, 8, 255, cv2.THRESH_BINARY)
-                alpha = a.astype(np.float32) / 255.0
+            # 3) transform (flip/scale)
+            rgb, alpha = self._apply_transform(rgb, alpha, rng)
 
-            # -------------------------
-            # 4. Position
+            # 4) position
             pos_mode = self.layout_policy.get(category, self.position_mode)
-            x, y = self._compute_position(w1, h1, W, H, pos_mode, rng)
+            x, y = self._compute_position(rgb.shape[1], rgb.shape[0], W, H, pos_mode, rng)
 
-            # -------------------------
-            # 5. Crop to canvas
-            x0 = max(0, x)
-            y0 = max(0, y)
-            x1 = min(W, x + w1)
-            y1 = min(H, y + h1)
-
-            sx0 = x0 - x
-            sy0 = y0 - y
-            sx1 = sx0 + (x1 - x0)
-            sy1 = sy0 + (y1 - y0)
-
-            if x1 <= x0 or y1 <= y0:
-                masks.append(np.zeros((H, W), np.uint8))
-                bboxes.append((0, 0, 0, 0))
-                continue
-
-            rgb_crop = rgb[sy0:sy1, sx0:sx1]
-            alpha_crop = alpha[sy0:sy1, sx0:sx1]
-
-            # -------------------------
-            # 6. Blend
-            bg_patch = canvas[y0:y1, x0:x1].astype(np.float32)
-            fg = rgb_crop.astype(np.float32)
-            a = alpha_crop[:, :, None]
-
-            if self.blend_mode == "alpha":
-                blended = fg * a + bg_patch * (1 - a)
-            elif self.blend_mode == "replace":
-                blended = np.where(a > 0.5, fg, bg_patch)
-            elif self.blend_mode == "screen":
-                blended = 1 - (1 - fg/255) * (1 - bg_patch/255)
-                blended *= 255
-            else:
-                blended = fg * a + bg_patch * (1 - a)
-
-            canvas[y0:y1, x0:x1] = blended.astype(np.uint8)
-
-            # -------------------------
-            # 7. Build mask
-            mask = np.zeros((H, W), dtype=np.uint8)
-            mask[y0:y1, x0:x1] = (alpha_crop * 255).astype(np.uint8)
-
-            # -------------------------
-            # 8. Compute bbox from mask
-            ys, xs = np.where(mask > 0)
-            if len(xs) == 0:
-                bboxes.append((0, 0, 0, 0))
-            else:
-                x_min, x_max = xs.min(), xs.max() + 1
-                y_min, y_max = ys.min(), ys.max() + 1
-                bboxes.append((x_min, y_min, x_max, y_max))
-
-            masks.append(mask)
+            # 5) composite & produce per-sign mask + bbox
+            canvas, mask_i, bbox_i = self._composite_one(canvas, rgb, alpha, x, y)
+            masks.append(mask_i)
+            bboxes.append(bbox_i)
 
         return canvas, masks, bboxes
 
-    # ----------------------------------------------------
+    def compose_single(
+        self,
+        bg_frame: np.ndarray,
+        sign_frame: np.ndarray,
+        category: Optional[str] = None,
+        rng: Optional[np.random.Generator] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int, int, int]]:
+        comp, masks, bboxes = self.compose_frame(
+            bg_frame,
+            [{"frame": sign_frame, "category": category or "general"}],
+            rng=rng,
+        )
+        return comp, masks[0], bboxes[0]
 
-    def _compute_position(self, w, h, W, H, mode, rng):
+    # ------------------------------------------------------------------
+    # Stage 0: background prep
+    # ------------------------------------------------------------------
+
+    def _prepare_bg(self, bg_frame: np.ndarray) -> np.ndarray:
+        if bg_frame.ndim != 3 or bg_frame.shape[2] != 3:
+            raise ValueError(f"bg_frame must be (H,W,3) RGB uint8, got {bg_frame.shape}")
+
+        canvas = bg_frame
+        if self.output_size is not None:
+            W_out, H_out = self.output_size
+            if canvas.shape[:2] != (H_out, W_out):
+                canvas = cv2.resize(canvas, (W_out, H_out), interpolation=cv2.INTER_LINEAR)
+        return canvas.copy()
+
+    # ------------------------------------------------------------------
+    # Stage 1: sign prep
+    # ------------------------------------------------------------------
+
+    def _prepare_sign(self, sign_frame: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Returns:
+            rgb:   (h,w,3) uint8
+            alpha: (h,w)   float32 in [0,1]
+        """
+        if sign_frame.ndim != 3 or sign_frame.shape[2] not in (3, 4):
+            raise ValueError(f"sign frame must be RGB/RGBA, got shape={sign_frame.shape}")
+
+        if sign_frame.shape[2] == 4:
+            rgb = sign_frame[:, :, :3].copy()
+            alpha = (sign_frame[:, :, 3].astype(np.float32) / 255.0)
+        else:
+            rgb = sign_frame.copy()
+            # v1 fallback: infer alpha via threshold on grayscale
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            _, a = cv2.threshold(gray, 8, 255, cv2.THRESH_BINARY)
+            alpha = a.astype(np.float32) / 255.0
+
+        alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+        return rgb, alpha
+
+    # ------------------------------------------------------------------
+    # Stage 2: sign_ops
+    # ------------------------------------------------------------------
+
+    def _apply_sign_ops(
+        self,
+        rgb: np.ndarray,
+        alpha: np.ndarray,
+        rng: np.random.Generator,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Apply occlusion/depatch ONLY within alpha>0 region.
+        Both rgb and alpha may be modified.
+        """
+        if self.cfg.occlusion_enabled:
+            rgb, alpha = self._apply_occlusion(rgb, alpha, rng)
+        if self.cfg.depatch_enabled:
+            rgb, alpha = self._apply_depatch(rgb, alpha, rng)
+        return rgb, alpha
+
+    def _apply_occlusion(
+        self,
+        rgb: np.ndarray,
+        alpha: np.ndarray,
+        rng: np.random.Generator,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Occlusion v1:
+          - choose K patches within sign bounding box (based on alpha>0)
+          - set rgb (and optionally alpha) in those patches per fill mode
+
+        Policy (v1):
+          - For "fill=zero": set rgb=0 and alpha=0 inside occluded patches
+          - For "fill=mean": set rgb=mean(rgb within sign), alpha=0
+          - For "fill=random": set rgb=random noise, alpha=0
+        """
+        mode = self.cfg.occlusion_mode
+        patch = max(int(self.cfg.occlusion_patch_size), 1)
+        ratio = float(self.cfg.occlusion_ratio)
+        fill = self.cfg.occlusion_fill
+
+        h, w = alpha.shape
+        mask = (alpha > 0.0).astype(np.uint8)
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return rgb, alpha
+
+        x1, x2 = xs.min(), xs.max() + 1
+        y1, y2 = ys.min(), ys.max() + 1
+        bbox_w = max(1, x2 - x1)
+        bbox_h = max(1, y2 - y1)
+
+        # number of patches roughly proportional to area
+        area = bbox_w * bbox_h
+        patch_area = patch * patch
+        K = int(np.ceil((ratio * area) / max(1, patch_area)))
+        K = max(K, 1)
+
+        rgb2 = rgb.copy()
+        alpha2 = alpha.copy()
+
+        if fill == "mean":
+            # mean over sign pixels only (more stable)
+            sign_pix = rgb2[mask.astype(bool)]
+            mean_rgb = sign_pix.mean(axis=0) if sign_pix.size else np.array([0, 0, 0], dtype=np.float32)
+            mean_rgb = mean_rgb.astype(np.float32)
+        else:
+            mean_rgb = None
+
+        for _ in range(K):
+            # sample patch top-left inside bbox
+            px = int(rng.integers(x1, max(x1 + 1, x2)))
+            py = int(rng.integers(y1, max(y1 + 1, y2)))
+
+            # align to patch window
+            x0 = int(np.clip(px - patch // 2, 0, w - 1))
+            y0 = int(np.clip(py - patch // 2, 0, h - 1))
+            x1p = min(w, x0 + patch)
+            y1p = min(h, y0 + patch)
+
+            # apply only where alpha>0 (sign region)
+            local = alpha2[y0:y1p, x0:x1p] > 0.0
+            if not np.any(local):
+                continue
+
+            if mode in ("patch", "block"):
+                if fill == "zero":
+                    rgb2[y0:y1p, x0:x1p][local] = 0
+                elif fill == "mean":
+                    rgb2[y0:y1p, x0:x1p][local] = mean_rgb
+                elif fill == "random":
+                    noise = rng.integers(0, 256, size=(y1p - y0, x1p - x0, 3), dtype=np.uint8)
+                    rgb2[y0:y1p, x0:x1p][local] = noise[local]
+                else:
+                    rgb2[y0:y1p, x0:x1p][local] = 0
+
+                # v1: occluded region becomes transparent (hard remove)
+                alpha2[y0:y1p, x0:x1p][local] = 0.0
+
+            elif mode == "random_pixels":
+                noise = rng.integers(0, 256, size=(y1p - y0, x1p - x0, 3), dtype=np.uint8)
+                rgb2[y0:y1p, x0:x1p][local] = noise[local]
+                alpha2[y0:y1p, x0:x1p][local] = 0.0
+            else:
+                # fallback
+                rgb2[y0:y1p, x0:x1p][local] = 0
+                alpha2[y0:y1p, x0:x1p][local] = 0.0
+
+        return rgb2, alpha2
+
+    def _apply_depatch(
+        self,
+        rgb: np.ndarray,
+        alpha: np.ndarray,
+        rng: np.random.Generator,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Depatch v1:
+          - split sign bbox into grid tiles
+          - scatter tiles (random permutation) within the same bbox
+          - apply to BOTH rgb and alpha
+          - operate only on sign bbox (derived from alpha>0)
+
+        This is a "hard" spatial scrambling but keeps global bbox location.
+        """
+        rows, cols = self.cfg.depatch_grid
+        rows = max(1, int(rows))
+        cols = max(1, int(cols))
+
+        mask = (alpha > 0.0).astype(np.uint8)
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return rgb, alpha
+
+        x1, x2 = xs.min(), xs.max() + 1
+        y1, y2 = ys.min(), ys.max() + 1
+
+        bbox_w = x2 - x1
+        bbox_h = y2 - y1
+        if bbox_w < cols or bbox_h < rows:
+            # too small to grid
+            return rgb, alpha
+
+        # compute tile sizes (floor), last tile takes remainder
+        xsplits = [x1]
+        for c in range(1, cols):
+            xsplits.append(x1 + (bbox_w * c) // cols)
+        xsplits.append(x2)
+
+        ysplits = [y1]
+        for r in range(1, rows):
+            ysplits.append(y1 + (bbox_h * r) // rows)
+        ysplits.append(y2)
+
+        # extract tiles
+        tiles_rgb = []
+        tiles_a = []
+        coords = []
+        for r in range(rows):
+            for c in range(cols):
+                xa0, xa1 = xsplits[c], xsplits[c + 1]
+                ya0, ya1 = ysplits[r], ysplits[r + 1]
+                coords.append((xa0, ya0, xa1, ya1))
+                tiles_rgb.append(rgb[ya0:ya1, xa0:xa1].copy())
+                tiles_a.append(alpha[ya0:ya1, xa0:xa1].copy())
+
+        n = len(coords)
+        if n <= 1:
+            return rgb, alpha
+
+        idxs = np.arange(n)
+        if self.cfg.depatch_scatter_mode in ("random", "permute"):
+            rng.shuffle(idxs)
+        else:
+            rng.shuffle(idxs)
+
+        rgb2 = rgb.copy()
+        alpha2 = alpha.copy()
+
+        # paste tiles back in permuted order
+        for dst_i, src_i in enumerate(idxs):
+            xa0, ya0, xa1, ya1 = coords[dst_i]
+            t_rgb = tiles_rgb[src_i]
+            t_a = tiles_a[src_i]
+
+            # keep_tile_size: tiles already match dst size by construction
+            # Still, guard shape mismatches (due to rounding)
+            dh, dw = (ya1 - ya0), (xa1 - xa0)
+            if t_rgb.shape[0] != dh or t_rgb.shape[1] != dw:
+                t_rgb = cv2.resize(t_rgb, (dw, dh), interpolation=cv2.INTER_LINEAR)
+                t_a = cv2.resize(t_a, (dw, dh), interpolation=cv2.INTER_NEAREST)
+
+            rgb2[ya0:ya1, xa0:xa1] = t_rgb
+            alpha2[ya0:ya1, xa0:xa1] = t_a
+
+        # v1: outside sign bbox unchanged; bbox stays same.
+        # Note: depatch may move alpha holes around; that's intended.
+        alpha2 = np.clip(alpha2, 0.0, 1.0).astype(np.float32)
+        return rgb2, alpha2
+
+    # ------------------------------------------------------------------
+    # Stage 3: transform (flip/scale)
+    # ------------------------------------------------------------------
+
+    def _apply_transform(
+        self,
+        rgb: np.ndarray,
+        alpha: np.ndarray,
+        rng: np.random.Generator,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        # flip
+        if self.cfg.allow_horizontal_flip and (rng.random() > 0.5):
+            rgb = cv2.flip(rgb, 1)
+            alpha = cv2.flip(alpha, 1)
+
+        # scale
+        lo, hi = self.cfg.scale_range
+        scale = float(rng.uniform(lo, hi))
+        h0, w0 = rgb.shape[:2]
+        h1, w1 = int(round(h0 * scale)), int(round(w0 * scale))
+
+        if h1 <= 0 or w1 <= 0:
+            # degenerate
+            return rgb, alpha
+
+        if (h1, w1) != (h0, w0):
+            rgb = cv2.resize(rgb, (w1, h1), interpolation=cv2.INTER_LINEAR)
+            alpha = cv2.resize(alpha, (w1, h1), interpolation=cv2.INTER_NEAREST)
+
+        alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+        return rgb, alpha
+
+    # ------------------------------------------------------------------
+    # Stage 4: compositing
+    # ------------------------------------------------------------------
+
+    def _composite_one(
+        self,
+        canvas: np.ndarray,
+        rgb: np.ndarray,
+        alpha: np.ndarray,
+        x: int,
+        y: int,
+    ) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int, int, int]]:
+        """
+        Composite sign rgb/alpha onto canvas at top-left (x,y),
+        including crop-to-canvas logic. Returns updated canvas,
+        per-sign mask in canvas coords, and bbox from mask>0.
+        """
+        H, W = canvas.shape[:2]
+        h1, w1 = rgb.shape[:2]
+
+        # crop to canvas
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(W, x + w1)
+        y1 = min(H, y + h1)
+
+        sx0 = x0 - x
+        sy0 = y0 - y
+        sx1 = sx0 + (x1 - x0)
+        sy1 = sy0 + (y1 - y0)
+
+        if x1 <= x0 or y1 <= y0:
+            mask = np.zeros((H, W), dtype=np.uint8)
+            return canvas, mask, (0, 0, 0, 0)
+
+        rgb_crop = rgb[sy0:sy1, sx0:sx1].astype(np.float32)
+        alpha_crop = alpha[sy0:sy1, sx0:sx1].astype(np.float32)
+        a = alpha_crop[:, :, None]
+
+        bg_patch = canvas[y0:y1, x0:x1].astype(np.float32)
+
+        if self.cfg.blend_mode == "alpha":
+            blended = rgb_crop * a + bg_patch * (1.0 - a)
+        elif self.cfg.blend_mode == "replace":
+            blended = np.where(a > 0.5, rgb_crop, bg_patch)
+        elif self.cfg.blend_mode == "screen":
+            blended = 1.0 - (1.0 - rgb_crop / 255.0) * (1.0 - bg_patch / 255.0)
+            blended *= 255.0
+        else:
+            blended = rgb_crop * a + bg_patch * (1.0 - a)
+
+        out = canvas.copy()
+        out[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
+
+        # Build per-sign mask (canvas coords)
+        mask = np.zeros((H, W), dtype=np.uint8)
+        mask_patch = (alpha_crop * 255.0).astype(np.uint8)
+        mask[y0:y1, x0:x1] = mask_patch
+
+        bbox = self._bbox_from_mask(mask)
+        return out, mask, bbox
+
+    def _bbox_from_mask(self, mask: np.ndarray) -> Tuple[int, int, int, int]:
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return (0, 0, 0, 0)
+        x_min, x_max = int(xs.min()), int(xs.max()) + 1
+        y_min, y_max = int(ys.min()), int(ys.max()) + 1
+        return (x_min, y_min, x_max, y_max)
+
+    # ------------------------------------------------------------------
+    # Positioning
+    # ------------------------------------------------------------------
+
+    def _compute_position(
+        self,
+        w: int,
+        h: int,
+        W: int,
+        H: int,
+        mode: str,
+        rng: np.random.Generator,
+    ) -> Tuple[int, int]:
         if mode == "center_bottom":
             return (W - w) // 2, H - h - 20
         if mode == "center":
@@ -163,127 +553,156 @@ class SpatialComposer:
             int(rng.integers(0, max(1, H - h))),
         )
 
-    # ----------------------------------------------------
 
-    def compose_single(self, bg_frame, sign_frame, category=None, rng=None):
-        comp, masks, bboxes = self.compose_frame(
-            bg_frame,
-            [{"frame": sign_frame, "category": category}],
-            rng
-        )
-        return comp, masks[0], bboxes[0]
-
-
-class SLRGBOcclusion:
-    pass
-
-class SLRGBDepatch:
-    pass
-
-class SLRGBPixel:
-    pass
-
-def figure_segment(mode='SAM'):
-    pass
-
-
-# ------------------- TEST -------------------
+# ------------------------------------------------------------------
+# TEST
+# ------------------------------------------------------------------
 if __name__ == "__main__":
-    print("=== SpatialComposer Geometry Test ===")
-
+    print("=== SpatialComposer v1 Pipeline Test ===")
     rng = np.random.default_rng(42)
 
     H, W = 240, 320
     bg = np.zeros((H, W, 3), dtype=np.uint8)
     bg[:] = 30
 
-    # 构造一个带 alpha 的 sign
-    sign = np.zeros((80, 80, 4), dtype=np.uint8)
-    cv2.circle(sign, (40, 40), 30, (255, 0, 0, 255), -1)
+    # sign 1: red circle RGBA
+    sign1 = np.zeros((80, 80, 4), dtype=np.uint8)
+    cv2.circle(sign1, (40, 40), 30, (255, 0, 0, 255), -1)
 
-    composer = SpatialComposer(
-        output_size=(W, H),
-        position_mode="random",
-        scale_range=(0.8, 1.2),
-        allow_flip=False,
-        blend_mode="alpha"
-    )
-
-    # ---------------- Single sign ----------------
-    print("\n--- Single Sign Test ---")
-    comp, mask, bbox = composer.compose_single(bg, sign, "greeting", rng)
-
-    print("Composite:", comp.shape)
-    print("Mask unique:", np.unique(mask))
-    print("BBox:", bbox)
-
-    x1, y1, x2, y2 = bbox
-
-    # mask → bbox consistency
-    ys, xs = np.where(mask > 0)
-    assert len(xs) > 0, "Mask is empty"
-
-    mx1, mx2 = xs.min(), xs.max() + 1
-    my1, my2 = ys.min(), ys.max() + 1
-
-    print("Mask bbox:", (mx1, my1, mx2, my2))
-
-    assert (x1, y1, x2, y2) == (mx1, my1, mx2, my2), \
-        f"BBox mismatch: bbox={bbox} mask={mx1,my1,mx2,my2}"
-
-    print("✔ mask-bbox geometry correct")
-
-    # ---------------- Multiple signs ----------------
-    print("\n--- Multiple Sign Test ---")
-
+    # sign 2: green rect RGBA
     sign2 = np.zeros((60, 60, 4), dtype=np.uint8)
     cv2.rectangle(sign2, (10, 10), (50, 50), (0, 255, 0, 255), -1)
 
-    frames = [
-        {"frame": sign, "category": "greeting"},
-        {"frame": sign2, "category": "question"},
-    ]
-
-    comp, masks, bboxes = composer.compose_frame(bg, frames, rng)
-
-    print("Num masks:", len(masks))
-    print("Num bboxes:", len(bboxes))
-
-    for i in range(2):
-        mask = masks[i]
-        bbox = bboxes[i]
-
-        ys, xs = np.where(mask > 0)
-        if len(xs) == 0:
-            print(f"Sign {i} fully offscreen")
-            continue
-
-        mx1, mx2 = xs.min(), xs.max() + 1
-        my1, my2 = ys.min(), ys.max() + 1
-
-        print(f"Sign {i} bbox={bbox} mask_bbox={(mx1,my1,mx2,my2)}")
-
-        assert bbox == (mx1, my1, mx2, my2), f"Sign {i} bbox mismatch"
-
-    print("✔ multiple sign geometry correct")
-
-    # ---------------- Semantic placement ----------------
-    print("\n--- Semantic Placement Test ---")
-
-    composer2 = SpatialComposer(
+    # ---------------- Baseline (all ops disabled) ----------------
+    print("\n--- Baseline (no sign_ops) ---")
+    composer = SpatialComposer(
         output_size=(W, H),
-        position_mode="grid"
+        position_mode="random",
+        spatial_cfg={
+            "sign_ops": {
+                "occlusion": {"enabled": False},
+                "depatch": {"enabled": False},
+            },
+            "transform": {
+                "scale_range": [0.8, 1.2],
+                "allow_horizontal_flip": False,
+                "blend_mode": "alpha",
+            },
+            "photometric": {
+                "on_sign": {},
+                "on_background": {},
+            }
+        },
+        debug=True,
     )
 
-    comp, mask, bbox = composer2.compose_single(bg, sign, "greeting", rng)
+    comp, mask, bbox = composer.compose_single(bg, sign1, "greeting", rng)
+    print("Composite:", comp.shape, "BBox:", bbox, "Mask unique:", np.unique(mask))
 
-    x1, y1, x2, y2 = bbox
-    print("Greeting bbox:", bbox)
+    # mask -> bbox consistency
+    ys, xs = np.where(mask > 0)
+    assert len(xs) > 0, "Mask is empty in baseline"
+    mx1, mx2 = xs.min(), xs.max() + 1
+    my1, my2 = ys.min(), ys.max() + 1
+    assert bbox == (mx1, my1, mx2, my2), f"Baseline bbox mismatch: {bbox} vs {(mx1,my1,mx2,my2)}"
+    print("✔ baseline mask-bbox consistency")
 
-    # greeting 应该靠近底部
+    # ---------------- Occlusion only ----------------
+    print("\n--- Occlusion-only ---")
+    composer_occ = SpatialComposer(
+        output_size=(W, H),
+        position_mode="center",
+        spatial_cfg={
+            "sign_ops": {
+                "occlusion": {
+                    "enabled": True,
+                    "mode": "patch",
+                    "patch_size": 16,
+                    "ratio": 0.25,
+                    "fill": "zero",
+                },
+                "depatch": {"enabled": False},
+            },
+            "transform": {
+                "scale_range": [1.0, 1.0],
+                "allow_horizontal_flip": False,
+                "blend_mode": "alpha",
+            },
+            "photometric": {"on_sign": {}, "on_background": {}}
+        },
+    )
+
+    comp2, mask2, bbox2 = composer_occ.compose_single(bg, sign1, "general", rng)
+    ys2, xs2 = np.where(mask2 > 0)
+    assert len(xs2) > 0, "Mask became empty after occlusion (too aggressive?)"
+    mx1, mx2 = xs2.min(), xs2.max() + 1
+    my1, my2 = ys2.min(), ys2.max() + 1
+    assert bbox2 == (mx1, my1, mx2, my2), f"Occlusion bbox mismatch: {bbox2} vs {(mx1,my1,mx2,my2)}"
+    print("✔ occlusion mask-bbox consistency")
+
+    # ---------------- Depatch only ----------------
+    print("\n--- Depatch-only ---")
+    composer_dep = SpatialComposer(
+        output_size=(W, H),
+        position_mode="center",
+        spatial_cfg={
+            "sign_ops": {
+                "occlusion": {"enabled": False},
+                "depatch": {
+                    "enabled": True,
+                    "grid": [3, 4],
+                    "scatter_mode": "random",
+                    "keep_tile_size": True,
+                },
+            },
+            "transform": {
+                "scale_range": [1.0, 1.0],
+                "allow_horizontal_flip": False,
+                "blend_mode": "alpha",
+            },
+            "photometric": {"on_sign": {}, "on_background": {}}
+        },
+    )
+
+    comp3, mask3, bbox3 = composer_dep.compose_single(bg, sign1, "general", rng)
+    ys3, xs3 = np.where(mask3 > 0)
+    assert len(xs3) > 0, "Mask became empty after depatch (unexpected)"
+    mx1, mx2 = xs3.min(), xs3.max() + 1
+    my1, my2 = ys3.min(), ys3.max() + 1
+    assert bbox3 == (mx1, my1, mx2, my2), f"Depatch bbox mismatch: {bbox3} vs {(mx1,my1,mx2,my2)}"
+    print("✔ depatch mask-bbox consistency")
+
+    # ---------------- Multiple signs geometry ----------------
+    print("\n--- Multiple signs ---")
+    frames = [
+        {"frame": sign1, "category": "greeting"},
+        {"frame": sign2, "category": "question"},
+    ]
+    comp4, masks, bboxes = composer.compose_frame(bg, frames, rng)
+
+    assert len(masks) == 2 and len(bboxes) == 2
+    for i in range(2):
+        m = masks[i]
+        bb = bboxes[i]
+        ys, xs = np.where(m > 0)
+        if len(xs) == 0:
+            print(f"Sign {i} fully offscreen (allowed).")
+            continue
+        mx1, mx2 = xs.min(), xs.max() + 1
+        my1, my2 = ys.min(), ys.max() + 1
+        assert bb == (mx1, my1, mx2, my2), f"Multi sign bbox mismatch at {i}"
+    print("✔ multiple signs mask-bbox consistency")
+
+    # ---------------- Semantic placement sanity ----------------
+    print("\n--- Semantic placement sanity (greeting near bottom) ---")
+    composer_place = SpatialComposer(
+        output_size=(W, H),
+        position_mode="random",
+        spatial_cfg={"transform": {"scale_range": [1.0, 1.0]}},
+    )
+    comp5, mask5, bbox5 = composer_place.compose_single(bg, sign1, "greeting", rng)
+    x1, y1, x2, y2 = bbox5
     assert y2 > H * 0.6, "Greeting should be placed near bottom"
+    print("✔ placement policy ok")
 
-    print("✔ semantic placement correct")
-
-    print("\nSpatialComposer is geometry-safe ✔")
-
+    print("\nSpatialComposer v1 pipeline test passed ✔")

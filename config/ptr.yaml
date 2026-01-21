@@ -6,7 +6,7 @@ Pretrain:
 Active_dataset:
   SL_datasets: ["CSL_Daily", "CSL_News"]
   SL_weights: [1.0, 1.5]
-  SL_noise_dataset: ["something-something-v2"]
+  SL_noise_datasets: ["something-something-v2"]
   SL_noise_weights: [1]
   BG_datasets: ["UCF101", "something-something-v2"]
   BG_weights: [1.0, 0.25]
