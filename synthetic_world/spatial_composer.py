@@ -173,6 +173,20 @@ class SpatialComposer:
         )
         return comp, masks[0], bboxes[0]
 
+
+class SLRGBOcclusion:
+    pass
+
+class SLRGBDepatch:
+    pass
+
+class SLRGBPixel:
+    pass
+
+def figure_segment(mode='SAM'):
+    pass
+
+
 # ------------------- TEST -------------------
 if __name__ == "__main__":
     print("=== SpatialComposer Geometry Test ===")

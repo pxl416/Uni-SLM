@@ -21,10 +21,12 @@ augment:
     gaussian_blur:
       enabled: false
 
-  pose:
-    jitter:
+    temporal_pool:
       enabled: false
-      noise: 0.01
+      motion: uniform
+      p: 0.5
+
+
 
   text:
     enabled: false
