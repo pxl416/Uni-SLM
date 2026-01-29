@@ -210,15 +210,15 @@ class SpatialComposer:
 
         if sign_frame.shape[2] == 4:
             rgb = sign_frame[:, :, :3].copy()
-            alpha = (sign_frame[:, :, 3].astype(np.float32) / 255.0)
+            alpha = sign_frame[:, :, 3].astype(np.float32) / 255.0
+
         else:
             rgb = sign_frame.copy()
-            # v1 fallback: infer alpha via threshold on grayscale
-            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-            _, a = cv2.threshold(gray, 8, 255, cv2.THRESH_BINARY)
-            alpha = a.astype(np.float32) / 255.0
 
-        alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+            # ✅ 临时方案：全前景，不做伪分割
+            h, w = rgb.shape[:2]
+            alpha = np.ones((h, w), dtype=np.float32)
+
         return rgb, alpha
 
     # Stage 2: sign_ops

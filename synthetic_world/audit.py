@@ -19,10 +19,7 @@ matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 
-# ============================================================
 # VideoAuditor
-# ============================================================
-
 class VideoAuditor:
     """
     视频审计器：保存和可视化合成结果
@@ -71,12 +68,12 @@ class VideoAuditor:
             frame = rgb_frames[t].copy()
 
             # ---- mask overlay ----
-            if masks_per_frame and t < len(masks_per_frame):
-                for mask in masks_per_frame[t]:
-                    if mask is not None and mask.sum() > 0:
-                        overlay = np.zeros_like(frame)
-                        overlay[:, :, 1] = mask  # green
-                        frame = cv2.addWeighted(frame, 1.0, overlay, 0.3, 0)
+            # if masks_per_frame and t < len(masks_per_frame):
+            #     for mask in masks_per_frame[t]:
+            #         if mask is not None and mask.sum() > 0:
+            #             overlay = np.zeros_like(frame)
+            #             overlay[:, :, 1] = mask  # green
+            #             frame = cv2.addWeighted(frame, 1.0, overlay, 0.3, 0)
 
             # ---- bbox ----
             if t < len(bboxes_per_frame):
@@ -252,10 +249,7 @@ class VideoAuditor:
         return outputs
 
 
-# ============================================================
 # Deprecated helper
-# ============================================================
-
 def audit_sample(*args, **kwargs):
     """
     DEPRECATED (v1):

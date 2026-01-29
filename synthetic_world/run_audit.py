@@ -345,9 +345,7 @@ def main2():
     print("=" * 60)
 
     try:
-        # --------------------------------------------------
         # 1) Load assets
-        # --------------------------------------------------
         print("\n[1] Loading assets...")
 
         from synthetic_world.loaders.csl_daily import load_csl_daily_as_assets_v1
@@ -371,9 +369,7 @@ def main2():
         print(f"  ✓ Signs: {len(signs)}")
         print(f"  ✓ Backgrounds: {len(bgs)}")
 
-        # --------------------------------------------------
         # 2) Build AssetPool
-        # --------------------------------------------------
         print("\n[2] Building asset pool...")
         pool = AssetPool()
         for s in signs:
@@ -384,9 +380,7 @@ def main2():
 
         print("  ✓ Pool summary:", pool.summary())
 
-        # --------------------------------------------------
         # 3) WorldSampler (abstract plan)
-        # --------------------------------------------------
         print("\n[3] Creating WorldSampler...")
         sampler = WorldSampler(
             pool=pool,
@@ -394,18 +388,14 @@ def main2():
             max_signs=3,
         )
 
-        # --------------------------------------------------
         # 4) TimelinePlanner
-        # --------------------------------------------------
         print("\n[4] Creating TimelinePlanner...")
         planner = TimelinePlanner(
             target_duration=6.0,    # seconds
             allow_overlap=False,
         )
 
-        # --------------------------------------------------
         # 5) Renderer
-        # --------------------------------------------------
         print("\n[5] Creating renderer...")
         renderer = WorldRenderer(
             output_size=(320, 240),
@@ -415,9 +405,7 @@ def main2():
             # spatial_config={"spatial_cfg": {...}} 视你 _parse_spatial_cfg 的接口而定
         )
 
-        # --------------------------------------------------
         # 6) Sample plan → concrete timeline
-        # --------------------------------------------------
         print("\n[6] Sampling world...")
         plan = sampler.sample_world()
 
