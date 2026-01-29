@@ -1,0 +1,16 @@
+{
+  "frames": 102,
+  "resolution": [
+    240,
+    320
+  ],
+  "frames_with_sign": 72,
+  "labels": {
+    "num_segments": 1,
+    "vocab_size": 9
+  },
+  "timeline": {
+    "background": "ApplyEyeMakeup/v_ApplyEyeMakeup_g02_c04.avi",
+    "num_segments": 1
+  }
+}

@@ -246,7 +246,6 @@ def main1():
         # 5. 生成一个世界
         print("\n5. Sampling world...")
         timeline = sampler.sample_world()
-
         print(f"   Background: {timeline.background.asset_id}")
         print(f"   Num segments: {len(timeline.segments)}")
         for i, seg in enumerate(timeline.segments):
@@ -256,7 +255,6 @@ def main1():
         # 6. 渲染
         print("\n6. Rendering...")
         render_result = renderer.render(timeline, clear_cache=True)
-
         print(f"   Rendered {len(render_result.rgb)} frames")
         print(f"   Frames with sign: {render_result.temporal_gt.sum()}/{len(render_result.temporal_gt)}")
 
@@ -264,16 +262,12 @@ def main1():
         print("\n7. Generating labels...")
         emitter = LabelEmitter(include_masks=True)
         labels = emitter.emit(render_result)
-
         print(f"   Labels generated: {len(labels.text_alignments)} segments")
         print(f"   Vocabulary: {labels.vocabulary}")
 
         # 8. 审计 & 可视化
         print("\n8. Auditing and visualizing...")
-
-        # 把 labels 挂到 render_result 上
-        render_result.labels = labels
-
+        render_result.labels = labels        # 把 labels 挂到 render_result 上
         auditor = VideoAuditor(output_dir="./audit_real")
         outputs = auditor.audit_render_result(
             render_result,
@@ -436,9 +430,7 @@ def main2():
             sid = getattr(sign, "asset_id", "unknown_sign") if sign is not None else "None"
             print(f"  Segment {i}: {sid} | {s0:.2f}s → {s1:.2f}s")
 
-        # --------------------------------------------------
         # 7) Render
-        # --------------------------------------------------
         print("\n[7] Rendering...")
         render_result = renderer.render(timeline, clear_cache=True)
 
@@ -446,9 +438,7 @@ def main2():
         print(f"  Frames: {T}")
         print(f"  Frames with sign: {int(render_result.temporal_gt.sum())} / {len(render_result.temporal_gt)}")
 
-        # --------------------------------------------------
         # 8) Emit labels (v1)
-        # --------------------------------------------------
         print("\n[8] Emitting labels...")
         emitter = LabelEmitter(include_masks=True)
 
@@ -464,9 +454,7 @@ def main2():
         # ✅ 关键：必须挂回去，否则 auditor 读不到 segment_spans
         render_result.labels = labels
 
-        # --------------------------------------------------
         # 9) Audit
-        # --------------------------------------------------
         print("\n[9] Auditing...")
         auditor = VideoAuditor(output_dir="./audit_real_v1")
         outputs = auditor.audit_render_result(
@@ -480,9 +468,7 @@ def main2():
             if v:
                 print(f"  {k}: {v}")
 
-        # --------------------------------------------------
         # 10) Save sanity-check artifacts
-        # --------------------------------------------------
         print("\n[10] Saving sanity-check artifacts...")
         import cv2
 
