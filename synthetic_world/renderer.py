@@ -43,6 +43,7 @@ class WorldRenderer:
         temporal_config: Optional[Dict[str, Any]] = None,
         seed: Optional[int] = None,
         enable_cache: bool = True,
+        sign_mask_provider=None,
     ):
         self.output_size = output_size
         self.fps = int(fps)
@@ -60,17 +61,17 @@ class WorldRenderer:
         # so DO NOT pass arbitrary keys that belong to YAML root.
         self.spatial_composer = SpatialComposer(
             output_size=output_size,
-            **spatial_config
+            spatial_cfg=spatial_config,
+            sign_mask_provider=sign_mask_provider,
         )
 
         # --- Caches ---
         self._bg_frame_cache: Dict[str, np.ndarray] = {}
         self._sign_full_cache: Dict[str, np.ndarray] = {}
 
-    # ========================================================
-    # Public API
-    # ========================================================
+        self.sign_mask_provider = sign_mask_provider
 
+    # Public API
     def render(self, timeline, clear_cache: bool = True) -> RenderResult:
         """
         Render a full synthetic video from a timeline.
@@ -117,10 +118,7 @@ class WorldRenderer:
         self._bg_frame_cache.clear()
         self._sign_full_cache.clear()
 
-    # ========================================================
     # Contract enforcement + safety fallback
-    # ========================================================
-
     def _get_timeline_segments(self, timeline) -> List[Dict[str, Any]]:
         # v1 compatibility: timeline may expose `segments` or `sign_segments`
         segs = getattr(timeline, "segments", None)
@@ -212,10 +210,7 @@ class WorldRenderer:
 
                 inst["active_signs"] = active
 
-    # ========================================================
     # Rendering internals
-    # ========================================================
-
     def _render_single_frame(
         self,
         instruction: Dict[str, Any],
@@ -236,6 +231,7 @@ class WorldRenderer:
             sign_frames_info.append({
                 "frame": sign_frame,
                 "category": s.get("category", getattr(sign_asset, "semantic_category", "general")),
+                "sign_id": getattr(sign_asset, "asset_id", None),
             })
 
         composite, masks, bboxes = self.spatial_composer.compose_frame(
@@ -245,10 +241,7 @@ class WorldRenderer:
         )
         return composite, masks, bboxes
 
-    # ========================================================
     # Asset loading
-    # ========================================================
-
     def _load_background_frame(self, bg_asset, frame_idx: int) -> np.ndarray:
         H, W = self.output_size[1], self.output_size[0]
         key = f"{getattr(bg_asset, 'asset_id', 'bg')}:{frame_idx}"
@@ -298,10 +291,7 @@ class WorldRenderer:
         frame = frames[frame_idx]
         return self._ensure_rgb(frame)
 
-    # ========================================================
     # Utils
-    # ========================================================
-
     def _ensure_rgb(self, frame: np.ndarray, W: Optional[int] = None, H: Optional[int] = None) -> np.ndarray:
         if frame.ndim == 2:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)

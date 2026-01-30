@@ -41,6 +41,10 @@ spatial:
     hue: [ -0.01, 0.01 ]
     gamma: [ 0.97, 1.03 ]
 
+  sign_mask:
+    method: 'yolo'
+
+
   photometric:
     on_sign:
       color_jitter: false

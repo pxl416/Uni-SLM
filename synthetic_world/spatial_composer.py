@@ -92,6 +92,7 @@ class SpatialComposer:
         position_mode: str = "random",
         spatial_cfg: Optional[dict] = None,
         debug: bool = False,
+        sign_mask_provider=None,
     ):
         self.output_size = output_size
         self.position_mode = position_mode
@@ -100,6 +101,9 @@ class SpatialComposer:
 
         # 🔒 clip-level cache
         self._clip_param_cache: Dict[str, Dict[str, Any]] = {}
+        self._clip_occlusion_cache: Dict[str, List[Tuple[int, int, int, int]]] = {}
+
+        self.mask_provider = sign_mask_provider
 
         self.layout_policy = {
             "greeting": "center_bottom",
@@ -153,7 +157,7 @@ class SpatialComposer:
             rgb, alpha = self._prepare_sign(sign_frame)
 
             # sign_ops: still frame-level (OK)
-            rgb, alpha = self._apply_sign_ops(rgb, alpha, rng)
+            rgb, alpha = self._apply_sign_ops(rgb, alpha, rng, sign_id)
 
             # ✅ transform: clip-level
             rgb, alpha = self._apply_transform(rgb, alpha, params)
@@ -208,52 +212,70 @@ class SpatialComposer:
         if sign_frame.ndim != 3 or sign_frame.shape[2] not in (3, 4):
             raise ValueError(f"sign frame must be RGB/RGBA, got shape={sign_frame.shape}")
 
+        # ---- Case 1: RGBA provided ----
         if sign_frame.shape[2] == 4:
             rgb = sign_frame[:, :, :3].copy()
             alpha = sign_frame[:, :, 3].astype(np.float32) / 255.0
+            alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+            return rgb, alpha
 
-        else:
-            rgb = sign_frame.copy()
+        # ---- Case 2: RGB only: try provider ----
+        rgb = sign_frame[:, :, :3].copy()
 
-            # ✅ 临时方案：全前景，不做伪分割
-            h, w = rgb.shape[:2]
-            alpha = np.ones((h, w), dtype=np.float32)
+        if self.mask_provider is not None:
+            try:
+                mask01, info = self.mask_provider.get_mask(rgb)  # (h,w) {0,1} or maybe other size
 
+                # Safety: resize if mismatch (YOLO can return model-native size)
+                if mask01.shape != rgb.shape[:2]:
+                    mask01 = cv2.resize(
+                        mask01.astype(np.uint8),
+                        (rgb.shape[1], rgb.shape[0]),
+                        interpolation=cv2.INTER_NEAREST
+                    )
+
+                alpha = mask01.astype(np.float32)  # {0,1}
+                alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+                return rgb, alpha
+
+            except Exception as e:
+                # Provider failed -> fallback full alpha
+                if self.debug:
+                    print(f"[SpatialComposer] mask_provider failed, fallback full alpha. err={e}")
+
+        # ---- Case 3: fallback ----
+        h, w = rgb.shape[:2]
+        alpha = np.ones((h, w), dtype=np.float32)
         return rgb, alpha
 
     # Stage 2: sign_ops
     def _apply_sign_ops(
-        self,
-        rgb: np.ndarray,
-        alpha: np.ndarray,
-        rng: np.random.Generator,
+            self,
+            rgb: np.ndarray,
+            alpha: np.ndarray,
+            rng: np.random.Generator,
+            sign_id: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
+
         """
         Apply occlusion/depatch ONLY within alpha>0 region.
         Both rgb and alpha may be modified.
         """
         if self.cfg.occlusion_enabled:
-            rgb, alpha = self._apply_occlusion(rgb, alpha, rng)
+            # rgb, alpha = self._apply_occlusion(rgb, alpha, rng)
+            rgb, alpha = self._apply_occlusion(rgb, alpha, rng, sign_id)
         if self.cfg.depatch_enabled:
             rgb, alpha = self._apply_depatch(rgb, alpha, rng)
         return rgb, alpha
 
     def _apply_occlusion(
-        self,
-        rgb: np.ndarray,
-        alpha: np.ndarray,
-        rng: np.random.Generator,
+            self,
+            rgb: np.ndarray,
+            alpha: np.ndarray,
+            rng: np.random.Generator,
+            sign_id: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Occlusion v1:
-          - choose K patches within sign bounding box (based on alpha>0)
-          - set rgb (and optionally alpha) in those patches per fill mode
 
-        Policy (v1):
-          - For "fill=zero": set rgb=0 and alpha=0 inside occluded patches
-          - For "fill=mean": set rgb=mean(rgb within sign), alpha=0
-          - For "fill=random": set rgb=random noise, alpha=0
-        """
         mode = self.cfg.occlusion_mode
         patch = max(int(self.cfg.occlusion_patch_size), 1)
         ratio = float(self.cfg.occlusion_ratio)
@@ -261,70 +283,78 @@ class SpatialComposer:
 
         h, w = alpha.shape
         mask = (alpha > 0.0).astype(np.uint8)
+
         ys, xs = np.where(mask > 0)
         if len(xs) == 0:
             return rgb, alpha
 
         x1, x2 = xs.min(), xs.max() + 1
         y1, y2 = ys.min(), ys.max() + 1
-        bbox_w = max(1, x2 - x1)
-        bbox_h = max(1, y2 - y1)
 
-        # number of patches roughly proportional to area
+        bbox_w = x2 - x1
+        bbox_h = y2 - y1
+
         area = bbox_w * bbox_h
         patch_area = patch * patch
+
         K = int(np.ceil((ratio * area) / max(1, patch_area)))
         K = max(K, 1)
+
+        # -------------------------
+        # 🔒 clip-level cache
+        # -------------------------
+        if sign_id is not None:
+
+            if sign_id not in self._clip_occlusion_cache:
+
+                patches = []
+
+                for _ in range(K):
+                    px = int(rng.integers(x1, x2))
+                    py = int(rng.integers(y1, y2))
+
+                    x0 = int(np.clip(px - patch // 2, 0, w - 1))
+                    y0 = int(np.clip(py - patch // 2, 0, h - 1))
+
+                    x1p = min(w, x0 + patch)
+                    y1p = min(h, y0 + patch)
+
+                    patches.append((x0, y0, x1p, y1p))
+
+                self._clip_occlusion_cache[sign_id] = patches
+
+            patches = self._clip_occlusion_cache[sign_id]
+
+        else:
+            patches = []
 
         rgb2 = rgb.copy()
         alpha2 = alpha.copy()
 
-        if fill == "mean":
-            # mean over sign pixels only (more stable)
-            sign_pix = rgb2[mask.astype(bool)]
-            mean_rgb = sign_pix.mean(axis=0) if sign_pix.size else np.array([0, 0, 0], dtype=np.float32)
-            mean_rgb = mean_rgb.astype(np.float32)
-        else:
-            mean_rgb = None
+        for (x0, y0, x1p, y1p) in patches:
 
-        for _ in range(K):
-            # sample patch top-left inside bbox
-            px = int(rng.integers(x1, max(x1 + 1, x2)))
-            py = int(rng.integers(y1, max(y1 + 1, y2)))
+            local = alpha2[y0:y1p, x0:x1p] > 0
 
-            # align to patch window
-            x0 = int(np.clip(px - patch // 2, 0, w - 1))
-            y0 = int(np.clip(py - patch // 2, 0, h - 1))
-            x1p = min(w, x0 + patch)
-            y1p = min(h, y0 + patch)
-
-            # apply only where alpha>0 (sign region)
-            local = alpha2[y0:y1p, x0:x1p] > 0.0
             if not np.any(local):
                 continue
 
-            if mode in ("patch", "block"):
-                if fill == "zero":
-                    rgb2[y0:y1p, x0:x1p][local] = 0
-                elif fill == "mean":
-                    rgb2[y0:y1p, x0:x1p][local] = mean_rgb
-                elif fill == "random":
-                    noise = rng.integers(0, 256, size=(y1p - y0, x1p - x0, 3), dtype=np.uint8)
-                    rgb2[y0:y1p, x0:x1p][local] = noise[local]
-                else:
-                    rgb2[y0:y1p, x0:x1p][local] = 0
-
-                # v1: occluded region becomes transparent (hard remove)
-                alpha2[y0:y1p, x0:x1p][local] = 0.0
-
-            elif mode == "random_pixels":
-                noise = rng.integers(0, 256, size=(y1p - y0, x1p - x0, 3), dtype=np.uint8)
-                rgb2[y0:y1p, x0:x1p][local] = noise[local]
-                alpha2[y0:y1p, x0:x1p][local] = 0.0
-            else:
-                # fallback
+            if fill == "zero":
                 rgb2[y0:y1p, x0:x1p][local] = 0
-                alpha2[y0:y1p, x0:x1p][local] = 0.0
+
+            elif fill == "mean":
+                sign_pix = rgb2[mask.astype(bool)]
+                mean_rgb = sign_pix.mean(axis=0).astype(np.float32)
+                rgb2[y0:y1p, x0:x1p][local] = mean_rgb
+
+            elif fill == "random":
+                noise = rng.integers(
+                    0, 256,
+                    size=(y1p - y0, x1p - x0, 3),
+                    dtype=np.uint8
+                )
+                rgb2[y0:y1p, x0:x1p][local] = noise[local]
+
+            alpha2[y0:y1p, x0:x1p][local] = 0.0
 
         return rgb2, alpha2
 
@@ -526,6 +556,7 @@ class SpatialComposer:
 
     def clear_caches(self):
         self._clip_param_cache.clear()
+        self._clip_occlusion_cache.clear()
 
 
 # TEST
